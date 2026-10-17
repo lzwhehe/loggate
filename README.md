@@ -4,14 +4,14 @@ LogGate 是一个用 Go 编写的单机安全日志采集网关。它的目标�
 
 设计见 [docs/DESIGN.md](docs/DESIGN.md)（§0.5 的 v0.2 修订优先于正文），红队评审见 [docs/REVIEW_01_红队评审.md](docs/REVIEW_01_红队评审.md)，实现与设计的偏差见 [docs/IMPLEMENTATION_NOTES.md](docs/IMPLEMENTATION_NOTES.md)。
 
-## 当前状态：M2（可靠投递主链路）
+## 当前状态：M3（故障注入基准）
 
 ### M1（已完成）
 - **WAL**：分段追加、CRC32C、单 writer 分配 Seq、组提交 fsync；fsync 成功后才 ack；打开时截断撕裂尾部；write/fsync 出错时毒段 + 滚段，本批不 ack。
 - **HTTP ingest**：`POST /v1/events`，fsync 后返回 200；Bearer token 绑定 SourceID。
 - **幂等键**：网关分配 `HMAC-SHA256(node | boot_epoch | seq)[:16]`，写入 WAL。
 
-### M2（本次）
+### M2（已完成）
 - **Dispatcher**：只消费已 fsync 的记录，按 seq 顺序；对每个目标先 `tracker.Add`，再非阻塞入队 L2，入不了就 Park 到 L1（原因 `NoDest / NotActive / BreakerOpen / QueueFull`，都不计重试次数）；一个事件的所有 Add 完成后才发布 dispatch 游标。
 - **AckTracker + checkpoint**：每目的地水位 = `min(最早未解决 seq − 1, 游标)`，没有流量的目的地随游标推进；只有在 sink 成功、L1 提交或 DLQ fsync 之后才 Resolve；每 `checkpoint_interval` 持久化，永不回退。
 - **L1（bbolt）**：`l1`、`due/<dest>`、`ckpt`、`registry`、`meta` 五个 bucket；状态位图 `Owned/Pending/Acked/Dead` + 每目的地 Slot + WAL 指针（不复制事件体）；单 writer 自行把操作攒进一个 `db.Update`，提交后才回调；Pending 清空即删记录；segRef 在内存维护、启动时重建。
@@ -27,9 +27,32 @@ LogGate 是一个用 Go 编写的单机安全日志采集网关。它的目标�
 - **反压**：`l1.on_quota: block_all`（默认）时，任一目的地 L1 积压超过 `max_records_per_dest`，ingest 返回 429 + `Retry-After`；`dlq_overflow` 时超额事件进 DLQ。
 - **统计**：`GET /v1/stats` 返回每目的地状态、熔断、L2 深度、L1 pending、已投递、错误、DLQ、水位和 checkpoint。
 
-M2 的已知缺口（详见实现说明 §4）：没有 Prometheus 和 admin API；没有磁盘配额 / ENOSPC 只读模式；sweeper 全量扫描 L1；还没有脱敏和 OCSF（WAL、L1、DLQ 中是未脱敏数据）；race detector 未在本机运行。
+### M3（本次）
+- **mocksink**（`cmd/mocksink`）：一个进程托管多个具名 webhook 接收方，控制端口 `POST /fault {dest, mode: ok|down|slow, delay_ms, error_code, error_rate, seed}`。`down` 关闭 listener 和所有连接（客户端得到连接失败，不是 5xx）；`slow` 延迟后照常处理（客户端超时也会落日志，这正是 S2b 重复的来源）；错误注入由 `(seed, 请求序号)` 决定，可复现。每个事件记一行 CSV 日志（dest、test_seq、idem_key、到达时间、计划发送时间、状态码）。
+- **loadgen**（`cmd/loadgen`）：开环定速，延迟从**计划发送时刻**算起（避免 coordinated omission），客户端落后会计数并报告；每条事件带 run_id、单调 test_seq、计划发送时间、路由用的 class，Bearer token 认证；只有 HTTP 200 进入"承诺集合"，429/503/错误分开记录，默认不重试；ack 延迟用 HdrHistogram。
+- **reconcile**（`cmd/reconcile`）：独立 oracle，`E_d = acked ∩ routed_to(d)`，路由表来自场景文件、由 reconcile 自己求值。读取 mocksink 日志、file sink（容忍撕裂行）、sqlite 行和网关 DLQ，按目的地输出 expected、lost、dup_raw、dup_stored、dlq、extra、misrouted、recovery_s、基线/故障中/故障后的 p50/p99/p999，JSON + markdown。
+- **faultbench**（`cmd/faultbench`）：按场景 YAML 启动 mocksink、网关（独立进程，生成配置和全新 data dir）、loadgen，按时间轴注入故障（sink down/slow/错误率、硬杀网关、重启、优雅停止、注销/注册目的地），等网关排空后对账；重复 N 次，输出均值和 95% CI（t 分布）、原始 CSV 和环境信息（OS、CPU、Go 版本、commit、配置）。
+- **场景**（`bench/scenarios/`）：S0 基线、S1 sink 宕机、S2 慢 sink、S2b 超过超时、S3 kill -9（3 个周期）、S3b 优雅重启、S4b 注销 → 孤儿 TTL → DLQ、S5 磁盘满（仅 Linux）、S6 10% 不可重试错误。拓扑为 archive(file)、siem(sqlite)、soar(webhook → mocksink)，另加始终健康的 probe(webhook → mocksink) 用来在独立接收方测健康 sink 的延迟。
+- **网关新增**：token 保护的 admin API（`POST /v1/admin/{shutdown,unregister,register}`，Windows 上优雅停止靠它）；最小磁盘配额（`disk.max_bytes`，统计 WAL + state.db + DLQ，超出返回 429）；file sink 启动时补齐被 kill 截断的半行。
 
-目前还没有任何性能数据，后面的基准实测之后才会补上。
+已知缺口（详见实现说明 §4、§9）：最终数字必须在 Linux 上跑 full profile；S5 尚未运行；没有 Prometheus、ENOSPC 只读模式；sweeper 全量扫描 L1；还没有脱敏和 OCSF；race detector 未在本机运行。
+
+### 基准结果
+
+**Windows quick profile 冒烟结果**：[bench/results/20261017-234601-windows-quick/fault.md](bench/results/20261017-234601-windows-quick/fault.md)（commit `1adcd08`，200 eps × 60s，每场景 1 次）。
+
+> 这是 Windows 上的冒烟测试，不是最终数字：单次重复、负载只有 full 的 1/10，loadgen、mocksink、网关同机运行；kill 用 TerminateProcess，优雅停止走 admin API。最终数字将来自 Linux 上的 full profile（2000 eps × 5 分钟 × 5 次，带 95% CI）。S5（磁盘满）只在 Linux 上运行，本次为 SKIPPED。
+
+| 场景 | 结果 | 丢失（全部目的地） | 重复（dup_raw） | DLQ | soar 恢复时间 |
+|---|---|---:|---|---:|---:|
+| S0 基线 | PASS | 0 | 0 | 0 | - |
+| S1 soar 宕机 24s | PASS | 0 | 0 | 0 | 6.56s |
+| S2 soar 慢 500ms | PASS | 0 | 0 | 0 | 0.01s |
+| S2b soar 慢 3s（超时 2s） | PASS | 0 | soar 908（预期；同一 idem_key，dup_stored=0） | 0 | 8.49s |
+| S3 kill 3 次 | PASS | 0 | archive 461、probe 361、soar 240；siem 存储重复 0 | 0 | 0.12s |
+| S3b 优雅重启 | PASS | 0 | 0 | 0 | 0.31s |
+| S4b 注销 soar + 孤儿 TTL 30s | PASS | 0 | 0 | soar 4902（orphan_ttl_expired） | - |
+| S6 soar 10% 返回 400 | PASS | 0 | 0 | soar 241，与 mocksink 的 4xx 日志完全一致 | - |
 
 ## 运行
 
@@ -51,6 +74,28 @@ tail -n 2 out/archive.jsonl
 
 收到 SIGINT 或 SIGTERM 时优雅关闭：停止接收 HTTP、WAL 刷盘、dispatcher 处理完已提交事件、各目的地完成在途批次并把 L2 剩余事件 Park、写最终 checkpoint。重启后不重放、不重复。超时用 `-shutdown-timeout` 设置，默认 30s。
 
+## 故障注入基准
+
+```powershell
+# Windows：构建 5 个二进制并运行全部场景（quick：200 eps、约 60s、1 次）
+.\scripts\faultbench.ps1
+.\scripts\faultbench.ps1 -Scenarios S1,S3 -BenchProfile quick
+```
+
+```bash
+# Linux：quick 冒烟；full = 2000 eps × 5 分钟 × 5 次（最终数字）
+scripts/faultbench.sh
+PROFILE=full REPS=5 scripts/faultbench.sh
+# S5 的真实 ENOSPC：data_dir 放到 64MB tmpfs
+sudo mount -t tmpfs -o size=64m tmpfs /mnt/lgdata
+LOGGATE_BENCH_DATA_ROOT=/mnt/lgdata scripts/faultbench.sh S5
+
+# 单独重新对账某次重复
+bin/reconcile -dir bench/results/<run>/raw/S1/rep1
+```
+
+结果写到 `bench/results/<时间戳>-<os>-<profile>/`：`fault.md`（汇总表）、`<场景>.json`（每次重复的完整对账结果 + 聚合 + 环境）、`summary.csv`（每场景 × 重复 × 目的地一行）、`raw/`（原始日志和数据目录，不进 git）。
+
 ## 测试
 
 ```bash
@@ -70,6 +115,13 @@ go test ./... -count=1
 
 ```
 cmd/loggate/           主程序
+cmd/mocksink/          基准：mock webhook 接收方
+cmd/loadgen/           基准：开环负载
+cmd/reconcile/         基准：独立对账
+cmd/faultbench/        基准：场景编排
+bench/scenarios/       故障场景 YAML
+bench/results/         基准结果
+scripts/               构建并运行基准的脚本
 configs/example.yaml   示例配置（未知键会报错）
 internal/event         LogEvent、DestMask、IdemKey
 internal/config        YAML 配置、默认值和校验
@@ -87,7 +139,8 @@ internal/sink          Sink / Envelope 接口
 internal/sink/file     file sink
 internal/sink/sqlite   sqlite sink（幂等）
 internal/sink/webhook  webhook sink
-internal/gateway       组装各组件，main 和端到端测试共用
+internal/gateway       组装各组件（含 admin API、磁盘配额），main 和端到端测试共用
+internal/bench/        基准实现：scenario、loadgen、mocksink、journal、reconcile、stats、faultbench
 ```
 
 ## License

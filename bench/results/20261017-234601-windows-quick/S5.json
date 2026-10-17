@@ -1,0 +1,23 @@
+{
+  "scenario": "S5",
+  "title": "disk quota exhausted while a sink is down (Linux only)",
+  "profile": "quick",
+  "skipped": "not supported on windows (platforms: [linux])",
+  "pass_all": false,
+  "environment": {
+    "profile": "quick",
+    "os": "windows",
+    "arch": "amd64",
+    "os_version": "Windows 10.0.26200.9711",
+    "cpu": "AMD Ryzen 9 5900HX with Radeon Graphics",
+    "num_cpu": 16,
+    "go_version": "go1.27.0",
+    "git_commit": "1adcd085540f",
+    "git_dirty": false,
+    "started_at": "2026-10-17T23:46:01+09:00",
+    "notes": [
+      "Windows run: smoke test only. Final numbers come from Linux (DESIGN §0.5 item 12).",
+      "kill = TerminateProcess (os.Process.Kill); graceful stop = POST /v1/admin/shutdown."
+    ]
+  }
+}

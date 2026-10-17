@@ -1,6 +1,6 @@
-# 实现说明（M2）
+# 实现说明（M2、M3）
 
-本文记录 M2 实现与 `DESIGN.md`（含 §0.5 v0.2 修订）的偏差、补充的细节和原因，以及已知缺口。没有列出的部分按设计实现。
+本文记录 M2、M3 实现与 `DESIGN.md`（含 §0.5 v0.2 修订）的偏差、补充的细节和原因，以及已知缺口。没有列出的部分按设计实现。
 
 ## 1. 与设计的偏差
 
@@ -57,8 +57,8 @@
 
 ## 4. 已知缺口
 
-1. 没有 Prometheus 指标、admin API（Register/Unregister 目前只有 Go API）、`loggatectl`，留到 M5。
-2. 没有磁盘配额和 ENOSPC 只读模式；DLQ 不计入磁盘配额（§0.5 item 10 未完成）。
+1. 没有 Prometheus 指标和 `loggatectl`，留到 M5。（M3 已补最小 HTTP admin API，见 §7-7。）
+2. 没有 ENOSPC 只读模式。（M3 已补最小磁盘配额，DLQ 计入，见 §7-8。）
 3. sweeper 每轮全量扫描 `l1` bucket，复杂度 O(L1 记录数)；L1 很大时应改为按 `ReceivedAt`/`FirstAt` 建二级索引。
 4. bbolt 文件不会收缩；长时间故障后 `state.db` 保持高水位（REVIEW 已指出 soak 只看 WAL 段数）。
 5. L1 提交失败（bbolt 错误）时，对应 seq 保持未解决，水位卡住、GC 停止，直到重启后重放；目前只记日志，没有告警指标。
@@ -66,3 +66,70 @@
 7. redeliver 读不到 WAL 记录时（理论上不应发生，segRef 会钉住段）会按 `retry.max` 推迟，最终由 sweeper 在 `max_age` 时转 DLQ（body 记为 null）。
 8. 只在 Windows 上跑过；race detector 未运行（见 §2）。
 9. 脱敏和 OCSF 未做（M4）：WAL、L1 引用的记录、DLQ 都保存未脱敏的事件。日志里不输出事件内容，只输出 seq、段号等定位信息。
+
+# M3：故障注入基准（faultbench）
+
+## 5. 组成
+
+| 组件 | 位置 | 说明 |
+|---|---|---|
+| mocksink | `cmd/mocksink`、`internal/bench/mocksink` | 一个进程托管多个具名 sink（各占一个端口）+ 独立控制端口：`POST /fault {dest, mode: ok\|down\|slow, delay_ms, error_code, error_rate, seed}`、`GET /stats`、`POST /flush`、`POST /shutdown`。每个事件写一行 CSV 日志 `dest,test_seq,idem_key,recv_unix_ns,scheduled_send_ns,status,gw_seq,run_id` |
+| loadgen | `cmd/loadgen`、`internal/bench/loadgen` | 开环定速：第 i 条的计划时刻 = start + i/rate（不累积舍入误差），每条一个 goroutine，只受 `max-inflight` 约束；延迟从计划时刻算（无 coordinated omission）；派发滞后 > 10ms 或撞到并发上限时计数并在报告里写出。承诺集合 = HTTP 200 的 test_seq（`sent.csv` + `acked.bitmap`），429/503/传输错误分开记录；默认不重试（`-retries` 可配，重试保持原 test_seq 和计划时刻）。ack 延迟用 HdrHistogram |
+| reconcile | `cmd/reconcile`、`internal/bench/reconcile` | 独立 oracle：`E_d = acked ∩ routed_to(d)`，routed_to 用场景文件里的路由表、由 reconcile 自己的代码求值（不调用网关的 router）。读取 mocksink 日志、file sink JSONL（容忍撕裂行）、sqlite 行、网关 DLQ |
+| faultbench | `cmd/faultbench`、`internal/bench/faultbench` | 按场景 YAML 编排：mocksink 进程、网关进程（`cmd/loggate` 的二进制，生成配置 + 全新 data dir）、loadgen 进程、时间轴、排空等待、优雅停止、reconcile、多次重复聚合 |
+| 场景 | `bench/scenarios/` | `_base.yaml`（共享拓扑、路由、网关配置、通用通过标准）+ S0、S1、S2、S2b、S3、S3b、S4b、S5、S6 |
+| 脚本 | `scripts/faultbench.ps1`、`scripts/faultbench.sh`、`Makefile` | 构建 5 个二进制并运行场景 |
+
+## 6. 指标定义（reconcile）
+
+对每个目的地 d：
+
+- **expected** = |E_d|，E_d = 承诺集合 ∩ oracle 路由到 d 的事件；
+- **lost** = E_d 中既没送达、也不在 DLQ 的事件数（进 DLQ 的事件是"已交代"的，单独计 dlq；同时检查 `dlq_and_delivered`，既送达又进 DLQ 视为错误）；
+- **dup_raw** = 送达副本数 − 唯一 test_seq 数（按 sink 实际写入的原始副本）；
+- **dup_stored**：sqlite = 行数 − 唯一 test_seq；webhook = 唯一 idem_key 数 − 唯一 test_seq（即"遵守 Idempotency-Key 的接收方"会存下的重复）；file = dup_raw；
+- **extra** = 送达但未被 ack 的事件（客户端看到失败、网关其实已持久化，不算错）；
+- **misrouted** = 送达或进 DLQ、但 oracle 不路由到 d 的事件；
+- **recovery_s** = 故障窗口结束后，所有"窗口结束前已 ack、未进 DLQ、路由到 d"的事件全部到达所需的时间；窗口结束前已全部到达记 0；有丢失或到达时间未知时为空；
+- **延迟** = 首次到达时刻 − 计划发送时刻，按计划时刻分成 baseline（窗口前）/ during / after 三段，报告 p50/p99/p999；
+- **dlq_matches_rejected**（webhook）= DLQ 集合是否等于 mocksink 以不可重试 4xx（非 408/429）拒绝过的事件集合。
+
+## 7. 与设计的偏差和补充
+
+| # | 设计 / 任务 | 实现 | 原因 |
+|---|---|---|---|
+| 1 | 三个目的地 archive/siem/soar | 另加第四个 **probe**（webhook → mocksink，永远健康，路由 auth+net） | §0.5 item 12 要求健康 sink 的延迟由独立接收方测量；file/sqlite 没有接收时钟 |
+| 2 | file/sqlite 的到达时间 | faultbench 内的 **observer** 每 50ms 轮询 JSONL（增量读、处理半行）和 sqlite（`rowid >` 增量查询），记录每个 test_seq 首次出现的时间 | 与网关无关的独立观测；分辨率 50ms，在报告中注明 |
+| 3 | lost 的定义 | lost 不含已进 DLQ 的事件，DLQ 单列 | S4b/S6 中进 DLQ 是预期行为；同时用 `dlq_and_delivered` 和 `dlq_matches_rejected` 防止 DLQ 掩盖错误 |
+| 4 | mocksink `down` | `http.Server.Close()`：关闭 listener 和所有已建连接，客户端得到 connection refused/reset；恢复时在同一地址重新 listen（失败重试 5s） | 任务要求"连接失败而非 5xx" |
+| 5 | mocksink `slow` | 先睡 delay 再判定、写日志、应答；客户端超时断开**不会**中止处理 | 与真实接收方一致，S2b 的重复就来自这里 |
+| 6 | 错误注入 | 每个 sink 自设置故障起按请求计数 n，`SplitMix64(seed, n) < error_rate` 时返回 error_code | 给定请求顺序完全可复现 |
+| 7 | 管理面（DESIGN §8 gRPC） | 在 ingest 同一端口上加 `POST /v1/admin/{shutdown,unregister,register}`，Bearer token（sha256 + 常数时间比较），未配置 `admin` 时不挂载；register 只给名字时按启动配置重新注册 | faultbench 需要注销/注册；Windows 没有 SIGTERM，优雅停止走 `/v1/admin/shutdown`（Linux 上 faultbench 用 SIGTERM） |
+| 8 | 磁盘配额（§4.9、§0.5 item 10） | `disk: {max_bytes, check_interval}`：后台每 `check_interval`（默认 1s）遍历 data_dir 求和（WAL + state.db + DLQ），超出时 ingest 返回 429 + Retry-After；`/v1/stats` 增加 `disk_bytes`、`disk_over_quota` | 最小实现；ENOSPC 只读模式仍未做；bbolt 文件不收缩，长时间故障后 state.db 可能让用量停在配额之上（S5 需在 Linux 上验证） |
+| 9 | file sink 撕裂行 | file sink `Init` 时若文件末尾不是换行，先补一个换行；reconcile 仍容忍"撕裂片段 + 完整记录粘在同一行"（从最后一个 `{"seq":` 重新解析） | 设计阶段发现：kill -9 后重启的第一条记录会和半行粘在一起，行式消费者读不出来，会被误判为丢失 |
+| 10 | S3 时间轴 | 一次运行内 3 个 kill/restart 周期（60/70、120/130、180/190s） | 任务允许 |
+| 11 | S0 | 增加无故障基线场景（同 seed、同速率、同"参考窗口"），fault.md 给出各场景 `p99 during` 相对 S0 的变化 | §0.5 item 12：p99 基线是同 seed 的无故障运行 |
+| 12 | "健康 sink p99 增幅 < 20%" | 只在报告中列出（`p99 during vs S0` 列），**不作为自动通过标准** | 单机上 loadgen/mocksink/网关共用 CPU，Windows quick 下数值噪声大；在 Linux full 结果上人工判读，后续再决定是否做成自动检查 |
+| 13 | profile | `quick`（200 eps，时间轴 ×0.2，约 60s，1 次）、`full`（2000 eps，5 分钟，5 次）、`smoke`（100 eps，×0.1，仅用于开发 harness）。网关的超时、TTL、退避、熔断参数**不随 profile 缩放** | quick 下故障窗口更短，但恢复时间仍由真实的退避（max 30s）和熔断（10s）决定 |
+| 14 | S5 | 场景标 `platforms: [linux]`，Windows 上报告 SKIPPED；段 4MB、`disk.max_bytes: 64MiB`；需要真实 ENOSPC 时用 `LOGGATE_BENCH_DATA_ROOT` 指向 64MB tmpfs | 任务要求 |
+| 15 | 原始数据 | 每次重复的原始文件在 `<results>/raw/<scenario>/rep<N>/`（sent.csv、mocksink 日志、sink 输出、observer 文件、gateway.yaml/log、data dir、reconcile.json/md），被 `.gitignore` 排除；提交的是 `<scenario>.json`、`fault.md`、`summary.csv`（每场景 × 重复 × 目的地一行） | 原始文件在 full profile 下很大 |
+
+## 8. Windows quick 运行（本机，commit 1adcd08）
+
+结果：`bench/results/20261017-234601-windows-quick/`。S0–S4b、S6 全部 PASS，所有目的地 lost = 0；S5 SKIPPED（仅 Linux）。没有发现需要修复的网关丢数据问题；开发 harness 时发现并修复了 file sink 的撕裂行问题（§7-9，带回归测试 `TestInitTerminatesTornLine`）。几个值得记下的观察：
+
+- **S3 的重复量符合上界**：checkpoint 间隔 1s，quick 负载下 archive 200 eps、probe 160 eps、soar 100 eps，3 次 kill 的理论上界约为 600 / 480 / 300；实测 461 / 361 / 240。siem（幂等）存储重复 0，webhook 的重复全部带同一个 idem_key（dup_stored = 0）。extra = 2–3：kill 发生在 fsync 之后、响应发出之前，客户端看到失败但事件已持久化并送达。
+- **S1 恢复 6.56s**：主要由 full-jitter 退避（max 30s）和熔断 open_for 10s 决定，不随 profile 缩放。
+- **S2b**：soar 原始重复 908，dup_stored = 0（重复全部是同一 idem_key 的重发），与"超时比接收方短必然重复"的预期一致。
+- **S3b**：dup = 0；停止窗口内已 ack 的事件在重启后约 2.3s 内送达（latency during p99 ≈ 2.3s，含 1s 的停机窗口和重启时间）。
+- **S6**：DLQ 241 条，与 mocksink 以 400 拒绝的事件集合完全一致。
+- 健康 sink（archive、siem、probe）在所有场景中故障期间的 p99 与 S0 相差 ≤ 1%（S3b 除外，那里所有 sink 都停了）。file/sqlite 的 p99 ≈ 80ms 主要来自 50ms 轮询分辨率；webhook 的 ≈ 32ms 来自 fsync（Windows 上约 10ms）和 20ms 批等待。
+
+## 9. 已知缺口（M3）
+
+1. **最终数字必须来自 Linux**：本机只跑了 Windows quick（单次重复、200 eps），只能当冒烟测试；kill 用 TerminateProcess，优雅停止用 admin API，fsync 语义与 Linux 不同。
+2. S5（磁盘满）只在 Linux 上运行，尚未跑过；配额检查是轮询（默认 1s），在两次检查之间仍可能超出配额；没有 ENOSPC 只读模式。
+3. loadgen、mocksink、网关在同一台机器上，互相争抢 CPU；延迟数字包含这部分干扰。
+4. file/sqlite 的到达时间分辨率是 observer 的 50ms 轮询；webhook（soar、probe）的到达时间是 mocksink 判定结果的时刻（slow 模式下在延迟之后）。
+5. Vector / Fluent Bit 对照（§10.4）、soak、性能矩阵（§11）未做。
+6. race detector 仍未在本机运行（无 gcc）。
