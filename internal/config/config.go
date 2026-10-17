@@ -24,6 +24,8 @@ type Config struct {
 	WAL          WAL           `yaml:"wal"`
 	Ingest       Ingest        `yaml:"ingest"`
 	Idempotency  Idempotency   `yaml:"idempotency"`
+	Retry        Retry         `yaml:"retry"`
+	L1           L1            `yaml:"l1"`
 	Destinations []Destination `yaml:"destinations"`
 	Routes       []Route       `yaml:"routes"`
 }
@@ -77,15 +79,58 @@ type Idempotency struct {
 	KeyEnv string `yaml:"key_env"`
 }
 
-// Destination is one output.
-type Destination struct {
-	Name   string         `yaml:"name"`
-	Type   string         `yaml:"type"`
-	Config map[string]any `yaml:"config"`
+// Retry configures redelivery backoff and the retry budget (DESIGN §4.3).
+type Retry struct {
+	Base        time.Duration `yaml:"base"`         // full-jitter base; default 200ms
+	Max         time.Duration `yaml:"max"`          // backoff cap; default 30s
+	MaxAttempts int           `yaml:"max_attempts"` // real send attempts before DLQ; default 20
+	MaxAge      time.Duration `yaml:"max_age"`      // event age before DLQ; default 24h
+	// RedeliverShare is the fraction of each L2 queue reserved for
+	// redelivery while the destination has an L1 backlog (>= 0.2).
+	RedeliverShare    float64       `yaml:"redeliver_share"`
+	RedeliverInterval time.Duration `yaml:"redeliver_interval"` // default 200ms
 }
 
-// Route maps matching events to destinations. In M1 only the catch-all
-// match ({}) is supported.
+// L1 configures the parking area, checkpoints, sweeper and GC.
+type L1 struct {
+	CheckpointInterval time.Duration `yaml:"checkpoint_interval"` // default 1s
+	OrphanTTL          time.Duration `yaml:"orphan_ttl"`          // default 24h
+	// MaxRecordsPerDest is the per-destination L1 quota (0 = unlimited).
+	MaxRecordsPerDest int64         `yaml:"max_records_per_dest"`
+	OnQuota           string        `yaml:"on_quota"`       // block_all (default) | dlq_overflow
+	SweepInterval     time.Duration `yaml:"sweep_interval"` // default 1s
+	GCInterval        time.Duration `yaml:"gc_interval"`    // default 10s
+	TombstoneTTL      time.Duration `yaml:"tombstone_ttl"`  // default 24h
+}
+
+// Queue bounds a destination's L2 queue and its batching.
+type Queue struct {
+	MaxEvents int           `yaml:"max_events"` // default 10000
+	MaxBytes  ByteSize      `yaml:"max_bytes"`  // default 64MiB
+	MaxBatch  int           `yaml:"max_batch"`  // default 256
+	BatchWait time.Duration `yaml:"batch_wait"` // default 20ms
+}
+
+// Breaker configures a destination's circuit breaker.
+type Breaker struct {
+	Failures int           `yaml:"failures"` // consecutive failed writes; default 5
+	OpenFor  time.Duration `yaml:"open_for"` // default 10s
+}
+
+// Destination is one output.
+type Destination struct {
+	Name    string         `yaml:"name"`
+	Type    string         `yaml:"type"`
+	Queue   Queue          `yaml:"queue"`
+	Breaker Breaker        `yaml:"breaker"`
+	Config  map[string]any `yaml:"config"`
+}
+
+// Route maps matching events to destinations. Match is a set of top-level
+// field equalities on the ingested JSON object ({} matches everything); the
+// first matching route wins. A route may name a destination that is not
+// configured: its ID is reserved (registry state "absent") and its events
+// are parked until it is configured or orphan_ttl expires (DESIGN §5).
 type Route struct {
 	Match map[string]any `yaml:"match"`
 	To    []string       `yaml:"to"`
@@ -101,10 +146,31 @@ const (
 	DefaultHTTPListen     = ":8080"
 	DefaultMaxBody        = 1 << 20
 	DefaultIdemKeyEnv     = "LOGGATE_IDEM_KEY"
+
+	DefaultRetryBase          = 200 * time.Millisecond
+	DefaultRetryMax           = 30 * time.Second
+	DefaultMaxAttempts        = 20
+	DefaultMaxAge             = 24 * time.Hour
+	DefaultRedeliverShare     = 0.5
+	MinRedeliverShare         = 0.2
+	DefaultRedeliverInterval  = 200 * time.Millisecond
+	DefaultCheckpointInterval = time.Second
+	DefaultOrphanTTL          = 24 * time.Hour
+	DefaultMaxRecordsPerDest  = 1_000_000
+	DefaultOnQuota            = "block_all"
+	DefaultSweepInterval      = time.Second
+	DefaultGCInterval         = 10 * time.Second
+	DefaultTombstoneTTL       = 24 * time.Hour
+	DefaultQueueMaxEvents     = 10000
+	DefaultQueueMaxBytes      = 64 << 20
+	DefaultMaxBatch           = 256
+	DefaultBatchWait          = 20 * time.Millisecond
+	DefaultBreakerFailures    = 5
+	DefaultBreakerOpenFor     = 10 * time.Second
 )
 
-// SupportedSinkTypes lists the destination types implemented so far.
-var supportedSinkTypes = map[string]bool{"file": true}
+// supportedSinkTypes lists the destination types implemented so far.
+var supportedSinkTypes = map[string]bool{"file": true, "sqlite": true, "webhook": true}
 
 // Load reads, parses, defaults, and validates the file at path.
 func Load(path string) (*Config, error) {
@@ -134,6 +200,12 @@ func Parse(b []byte) (*Config, error) {
 	return &c, nil
 }
 
+func setDur(d *time.Duration, def time.Duration) {
+	if *d == 0 {
+		*d = def
+	}
+}
+
 // ApplyDefaults fills zero values with defaults.
 func (c *Config) ApplyDefaults() {
 	if c.NodeID == "" {
@@ -160,6 +232,106 @@ func (c *Config) ApplyDefaults() {
 	if c.Idempotency.KeyEnv == "" {
 		c.Idempotency.KeyEnv = DefaultIdemKeyEnv
 	}
+	r := &c.Retry
+	setDur(&r.Base, DefaultRetryBase)
+	setDur(&r.Max, DefaultRetryMax)
+	setDur(&r.MaxAge, DefaultMaxAge)
+	setDur(&r.RedeliverInterval, DefaultRedeliverInterval)
+	if r.MaxAttempts == 0 {
+		r.MaxAttempts = DefaultMaxAttempts
+	}
+	if r.RedeliverShare == 0 {
+		r.RedeliverShare = DefaultRedeliverShare
+	}
+	l := &c.L1
+	setDur(&l.CheckpointInterval, DefaultCheckpointInterval)
+	setDur(&l.OrphanTTL, DefaultOrphanTTL)
+	setDur(&l.SweepInterval, DefaultSweepInterval)
+	setDur(&l.GCInterval, DefaultGCInterval)
+	setDur(&l.TombstoneTTL, DefaultTombstoneTTL)
+	if l.MaxRecordsPerDest == 0 {
+		l.MaxRecordsPerDest = DefaultMaxRecordsPerDest
+	}
+	if l.OnQuota == "" {
+		l.OnQuota = DefaultOnQuota
+	}
+	for i := range c.Destinations {
+		c.Destinations[i].ApplyDefaults()
+	}
+}
+
+// ApplyDefaults fills a destination's zero values.
+func (d *Destination) ApplyDefaults() {
+	q, b := &d.Queue, &d.Breaker
+	if q.MaxEvents == 0 {
+		q.MaxEvents = DefaultQueueMaxEvents
+	}
+	if q.MaxBytes == 0 {
+		q.MaxBytes = DefaultQueueMaxBytes
+	}
+	if q.MaxBatch == 0 {
+		q.MaxBatch = DefaultMaxBatch
+	}
+	setDur(&q.BatchWait, DefaultBatchWait)
+	if b.Failures == 0 {
+		b.Failures = DefaultBreakerFailures
+	}
+	setDur(&b.OpenFor, DefaultBreakerOpenFor)
+}
+
+// AbsentDestinations returns names referenced by routes that are not
+// configured (they get reserved IDs and their events are parked).
+func (c *Config) AbsentDestinations() []string {
+	conf := map[string]bool{}
+	for _, d := range c.Destinations {
+		conf[d.Name] = true
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range c.Routes {
+		for _, n := range r.To {
+			if !conf[n] && !seen[n] {
+				seen[n] = true
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+// BuiltinType reports whether typ is a compiled-in sink type.
+func BuiltinType(typ string) bool { return supportedSinkTypes[typ] }
+
+// ValidateDestination checks one destination (also used for runtime
+// registration). knownType decides which sink types exist (BuiltinType
+// for configuration files).
+func ValidateDestination(d Destination, knownType func(string) bool) error {
+	var errs []error
+	add := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
+	if d.Name == "" {
+		add("name is required")
+	}
+	if !knownType(d.Type) {
+		add("%s: unsupported type %q (supported: file, sqlite, webhook)", d.Name, d.Type)
+		return errors.Join(errs...)
+	}
+	switch d.Type {
+	case "file", "sqlite":
+		if p, _ := d.Config["path"].(string); p == "" {
+			add("%s: config.path is required for type %s", d.Name, d.Type)
+		}
+	case "webhook":
+		if u, _ := d.Config["url"].(string); u == "" {
+			add("%s: config.url is required for type webhook", d.Name)
+		}
+	}
+	if d.Queue.MaxEvents < 1 || d.Queue.MaxBytes < 1 || d.Queue.MaxBatch < 1 || d.Queue.BatchWait < 0 {
+		add("%s: queue limits must be positive", d.Name)
+	}
+	if d.Breaker.Failures < 1 || d.Breaker.OpenFor <= 0 {
+		add("%s: breaker.failures and breaker.open_for must be positive", d.Name)
+	}
+	return errors.Join(errs...)
 }
 
 // Validate checks semantic constraints. It reports all problems at once.
@@ -193,28 +365,38 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	r := c.Retry
+	if r.Base <= 0 || r.Max < r.Base {
+		add("retry: need 0 < base <= max")
+	}
+	if r.MaxAttempts < 1 || r.MaxAge <= 0 || r.RedeliverInterval <= 0 {
+		add("retry: max_attempts, max_age and redeliver_interval must be positive")
+	}
+	if r.RedeliverShare < MinRedeliverShare || r.RedeliverShare >= 1 {
+		add("retry.redeliver_share must be in [%.1f, 1), got %v", MinRedeliverShare, r.RedeliverShare)
+	}
+	l := c.L1
+	if l.CheckpointInterval <= 0 || l.OrphanTTL <= 0 || l.SweepInterval <= 0 || l.GCInterval <= 0 || l.TombstoneTTL <= 0 {
+		add("l1: intervals and TTLs must be positive")
+	}
+	if l.MaxRecordsPerDest < 0 {
+		add("l1.max_records_per_dest must be >= 0 (0 = unlimited)")
+	}
+	if l.OnQuota != "block_all" && l.OnQuota != "dlq_overflow" {
+		add("l1.on_quota must be block_all or dlq_overflow, got %q", l.OnQuota)
+	}
+
 	names := map[string]bool{}
 	if len(c.Destinations) == 0 {
 		add("at least one destination is required")
 	}
-	if len(c.Destinations) > event.MaxDests {
-		add("at most %d destinations are supported, got %d", event.MaxDests, len(c.Destinations))
-	}
 	for i, d := range c.Destinations {
-		if d.Name == "" {
-			add("destinations[%d].name is required", i)
-		} else if names[d.Name] {
+		if d.Name != "" && names[d.Name] {
 			add("destinations[%d]: duplicate name %q", i, d.Name)
 		}
 		names[d.Name] = true
-		if !supportedSinkTypes[d.Type] {
-			add("destinations[%d] (%s): unsupported type %q (supported: file)", i, d.Name, d.Type)
-			continue
-		}
-		if d.Type == "file" {
-			if p, _ := d.Config["path"].(string); p == "" {
-				add("destinations[%d] (%s): config.path is required for type file", i, d.Name)
-			}
+		if err := ValidateDestination(d, BuiltinType); err != nil {
+			add("destinations[%d]: %w", i, err)
 		}
 	}
 
@@ -222,17 +404,24 @@ func (c *Config) Validate() error {
 		add("at least one route is required")
 	}
 	for i, r := range c.Routes {
-		if len(r.Match) != 0 {
-			add("routes[%d]: only the catch-all match {} is supported in this version", i)
+		for k, v := range r.Match {
+			switch v.(type) {
+			case string, int, int64, float64, bool:
+			default:
+				add("routes[%d].match.%s: only scalar equality is supported", i, k)
+			}
 		}
 		if len(r.To) == 0 {
 			add("routes[%d].to must not be empty", i)
 		}
 		for _, n := range r.To {
-			if !names[n] {
-				add("routes[%d]: unknown destination %q", i, n)
+			if n == "" {
+				add("routes[%d]: empty destination name", i)
 			}
 		}
+	}
+	if n := len(names) + len(c.AbsentDestinations()); n > event.MaxDests {
+		add("at most %d destinations (configured + route-only) are supported, got %d", event.MaxDests, n)
 	}
 	return errors.Join(errs...)
 }

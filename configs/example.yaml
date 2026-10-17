@@ -1,7 +1,7 @@
-# LogGate M1 example configuration.
-# Only keys implemented in M1 are accepted; unknown keys are rejected.
+# LogGate example configuration (M2).
+# Only implemented keys are accepted; unknown keys are rejected.
 node_id: gw-1
-data_dir: ./data
+data_dir: ./data          # wal/, state.db (bbolt: L1, ckpt, registry), dlq/
 
 wal:
   segment_bytes: 64MiB     # roll threshold
@@ -22,10 +22,40 @@ idempotency:
   # is unset, a random per-process key is used.
   key_env: LOGGATE_IDEM_KEY
 
+retry:
+  base: 200ms              # full jitter: rand[0, min(max, base*2^(n-1)))
+  max: 30s
+  max_attempts: 20         # real send attempts; QueueFull/BreakerOpen/NotActive do not count
+  max_age: 24h             # measured from received_at
+  redeliver_share: 0.5     # L2 share reserved for redelivery while a backlog exists (>= 0.2)
+  redeliver_interval: 200ms
+
+l1:
+  checkpoint_interval: 1s
+  orphan_ttl: 24h          # parked events of absent/unregistered destinations -> DLQ
+  max_records_per_dest: 1000000
+  on_quota: block_all      # block_all (HTTP 429) | dlq_overflow
+  sweep_interval: 1s
+  gc_interval: 10s
+  tombstone_ttl: 24h       # a removed destination's ID is not reused before this
+
 destinations:
   - name: archive
-    type: file
+    type: file             # not idempotent: exposes the raw duplicate rate
+    queue: { max_events: 10000, max_bytes: 64MiB }
     config: { path: ./out/archive.jsonl }
+  - name: siem
+    type: sqlite           # idempotent: INSERT ... ON CONFLICT(idem_key) DO NOTHING
+    breaker: { failures: 5, open_for: 10s }
+    config: { path: ./out/siem.db }
+  # - name: soar
+  #   type: webhook
+  #   breaker: { failures: 5, open_for: 10s }
+  #   config: { url: "http://127.0.0.1:9100/ingest", timeout: 2s, batch: true }
 
+# First matching route wins; match = top-level field equality on the
+# ingested JSON object. Naming an unconfigured destination reserves its ID
+# and parks its events until it is configured or orphan_ttl expires.
 routes:
+  - { match: { class_uid: 3002 }, to: [archive, siem] }
   - { match: {}, to: [archive] }

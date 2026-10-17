@@ -583,3 +583,64 @@ func TestCrashAfterAckKeepsAllAcked(t *testing.T) {
 		t.Fatalf("expected several segments, got %v", w2.Segments())
 	}
 }
+
+// RemoveSegment never removes the newest segment, defers deletion while an
+// iterator holds the file open, and makes the segment unreadable at once.
+func TestRemoveSegmentDeferredWhileReading(t *testing.T) {
+	dir := t.TempDir()
+	w := open(t, Options{Dir: dir, SegmentBytes: 4 << 10})
+	defer w.Close()
+	for range 10 {
+		mustAppend(t, w, 20)
+	}
+	segs := w.Segments()
+	if len(segs) < 3 {
+		t.Fatalf("segments %v", segs)
+	}
+	if err := w.RemoveSegment(segs[len(segs)-1]); !errors.Is(err, ErrActiveSegment) {
+		t.Fatalf("removing active segment: %v", err)
+	}
+	it := w.NewIterator(segs[0])
+	if _, err := it.Next(); err != nil { // pins segs[0]
+		t.Fatal(err)
+	}
+	if err := w.RemoveSegment(segs[0]); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, SegmentName(segs[0]))
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("file deleted while pinned: %v", err)
+	}
+	if _, err := w.ReadAt(segs[0], 0, 10); !errors.Is(err, ErrNotCommitted) {
+		t.Fatalf("read of removed segment: %v", err)
+	}
+	it.Close()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("file not deleted after release: %v", err)
+	}
+	if err := w.RemoveSegment(segs[1]); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.Segments(); len(got) != len(segs)-2 {
+		t.Fatalf("segments after GC %v", got)
+	}
+}
+
+// ScanFrom skips validating old segments but still recovers next seq and
+// lets readers access them.
+func TestScanFromSkipsOldSegments(t *testing.T) {
+	dir := t.TempDir()
+	w := open(t, Options{Dir: dir, SegmentBytes: 4 << 10})
+	for range 10 {
+		mustAppend(t, w, 20)
+	}
+	w.Close()
+	w2 := open(t, Options{Dir: dir, ScanFrom: 150})
+	defer w2.Close()
+	if w2.NextSeq() != 201 {
+		t.Fatalf("next seq %d", w2.NextSeq())
+	}
+	if got := readAll(t, w2); len(got) != 200 {
+		t.Fatalf("read %d records", len(got))
+	}
+}

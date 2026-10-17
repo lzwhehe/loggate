@@ -2,6 +2,7 @@
 //
 //	POST /v1/events   body: one JSON object or an array of objects
 //	GET  /healthz
+//	GET  /v1/stats    delivery statistics (if configured)
 //
 // A 200 response is sent only after every event in the request has been
 // fsynced to the WAL; any WAL failure yields 503 and nothing is
@@ -19,8 +20,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/lzwhehe/loggate/internal/clock"
 	"github.com/lzwhehe/loggate/internal/event"
@@ -49,6 +52,13 @@ type Options struct {
 	Keyer  *event.IdemKeyer
 	Clock  clock.Clock
 	Logger *slog.Logger
+	// Backpressure, if set, is consulted per request; while it returns true
+	// new events are refused with 429 and Retry-After (DESIGN §4.9).
+	Backpressure func() bool
+	// RetryAfter is the Retry-After value sent with 429; default 1s.
+	RetryAfter time.Duration
+	// Stats, if set, serves GET /v1/stats as JSON.
+	Stats func() any
 }
 
 type tokenEntry struct {
@@ -67,6 +77,10 @@ type Handler struct {
 	tokens   []tokenEntry
 	draining atomic.Bool
 	mux      *http.ServeMux
+	backp    func() bool
+	retryAft string
+	stats    func() any
+	rejected atomic.Uint64
 }
 
 // New returns a handler.
@@ -83,9 +97,14 @@ func New(app Appender, router Router, opts Options) (*Handler, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
+	if opts.RetryAfter <= 0 {
+		opts.RetryAfter = time.Second
+	}
 	h := &Handler{
 		wal: app, router: router, keyer: opts.Keyer, clock: opts.Clock,
 		log: opts.Logger.With("component", "ingest.http"), maxBody: opts.MaxBody,
+		backp: opts.Backpressure, stats: opts.Stats,
+		retryAft: strconv.Itoa(int(max(1, opts.RetryAfter.Round(time.Second)/time.Second))),
 	}
 	for tok, src := range opts.Tokens {
 		if tok == "" || src == "" {
@@ -96,8 +115,14 @@ func New(app Appender, router Router, opts Options) (*Handler, error) {
 	h.mux = http.NewServeMux()
 	h.mux.HandleFunc("POST /v1/events", h.handleEvents)
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
+	if h.stats != nil {
+		h.mux.HandleFunc("GET /v1/stats", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, h.stats()) })
+	}
 	return h, nil
 }
+
+// Rejected returns how many requests were refused with 429.
+func (h *Handler) Rejected() uint64 { return h.rejected.Load() }
 
 // ServeHTTP implements http.Handler.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.ServeHTTP(w, r) }
@@ -159,6 +184,12 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="loggate"`)
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"missing or invalid bearer token"})
+		return
+	}
+	if h.backp != nil && h.backp() {
+		h.rejected.Add(1)
+		w.Header().Set("Retry-After", h.retryAft)
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{"delivery backlog over quota, retry later"})
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody))

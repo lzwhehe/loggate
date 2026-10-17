@@ -61,6 +61,11 @@ type Options struct {
 	// SeqFloor is a lower bound for sequence numbers: the next assigned
 	// seq is > SeqFloor. Later milestones pass max(ckpt, L1 max seq).
 	SeqFloor uint64
+	// ScanFrom lets recovery skip validating segments that only hold seqs
+	// <= ScanFrom (everything at or below min(ckpt) is never replayed, and
+	// L1-referenced records are CRC-checked on every ReadAt). The last
+	// segment is always scanned.
+	ScanFrom uint64
 	// EmitCommitted enables the Committed stream. If enabled the consumer
 	// must keep reading, or the writer (and thus ingest) blocks.
 	EmitCommitted   bool
@@ -120,6 +125,10 @@ type segMeta struct {
 	base      uint64
 	committed atomic.Int64 // bytes covered by a successful fsync
 	poisoned  atomic.Bool
+
+	// guarded by WAL.segMu
+	readers int  // open reader handles (ReadAt, Iterator)
+	removed bool // RemoveSegment called; file deleted when readers == 0
 }
 
 // activeSeg is the writer-owned open segment.
@@ -178,10 +187,8 @@ func Open(opts Options) (*WAL, error) {
 	return w, nil
 }
 
-// recover scans every segment, truncates invalid tails, and computes nextSeq.
-//
-// TODO(M2): with checkpoints, scan only from min(ckpt) instead of all
-// segments; segments are bounded by GC from M2 on.
+// recover scans segments, truncates invalid tails, and computes nextSeq.
+// Segments entirely at or below Options.ScanFrom are not scanned.
 func (w *WAL) recover() error {
 	if err := w.fs.MkdirAll(w.opts.Dir, 0o755); err != nil {
 		return fmt.Errorf("wal: create dir: %w", err)
@@ -199,9 +206,22 @@ func (w *WAL) recover() error {
 	slices.Sort(bases)
 
 	var maxSeq uint64
+	skipped := 0
 	for i, base := range bases {
 		last := i == len(bases)-1
 		path := filepath.Join(w.opts.Dir, SegmentName(base))
+		if !last && bases[i+1] <= w.opts.ScanFrom+1 {
+			// Every seq in this segment is < bases[i+1] <= ScanFrom+1.
+			size, err := w.fileSize(path)
+			if err != nil {
+				return fmt.Errorf("wal: stat segment %d: %w", base, err)
+			}
+			m := &segMeta{base: base}
+			m.committed.Store(size)
+			w.segs = append(w.segs, m)
+			skipped++
+			continue
+		}
 		f, err := w.fs.OpenFile(path, os.O_RDWR, 0)
 		if err != nil {
 			return fmt.Errorf("wal: open segment %d: %w", base, err)
@@ -245,8 +265,17 @@ func (w *WAL) recover() error {
 		next = w.active.meta.base
 	}
 	w.nextSeq.Store(next)
-	w.log.Info("wal recovered", "segments", len(w.segs), "max_seq", maxSeq, "next_seq", next)
+	w.log.Info("wal recovered", "segments", len(w.segs), "skipped_scan", skipped, "max_seq", maxSeq, "next_seq", next)
 	return nil
+}
+
+func (w *WAL) fileSize(path string) (int64, error) {
+	f, err := w.fs.OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return f.Size()
 }
 
 // scanForRecovery returns the end of the valid prefix of a segment, the max

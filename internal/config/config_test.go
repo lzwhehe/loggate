@@ -66,12 +66,20 @@ routes: [{ match: {}, to: [a] }]`, "unsupported type"},
 		"missing path": {`
 destinations: [{ name: a, type: file }]
 routes: [{ match: {}, to: [a] }]`, "config.path is required"},
-		"unknown route dest": {`
+		"non-scalar match": {`
 destinations: [{ name: a, type: file, config: { path: x } }]
-routes: [{ match: {}, to: [b] }]`, "unknown destination"},
-		"non catch-all": {`
+routes: [{ match: { class_uid: [1, 2] }, to: [a] }]`, "scalar equality"},
+		"share too small": {`
+retry: { redeliver_share: 0.1 }
 destinations: [{ name: a, type: file, config: { path: x } }]
-routes: [{ match: { class_uid: 3002 }, to: [a] }]`, "catch-all"},
+routes: [{ match: {}, to: [a] }]`, "redeliver_share"},
+		"bad on_quota": {`
+l1: { on_quota: drop_oldest_to_dlq }
+destinations: [{ name: a, type: file, config: { path: x } }]
+routes: [{ match: {}, to: [a] }]`, "on_quota"},
+		"webhook without url": {`
+destinations: [{ name: a, type: webhook }]
+routes: [{ match: {}, to: [a] }]`, "config.url is required"},
 		"duplicate dest": {`
 destinations: [{ name: a, type: file, config: { path: x } }, { name: a, type: file, config: { path: y } }]
 routes: [{ match: {}, to: [a] }]`, "duplicate name"},
@@ -119,5 +127,34 @@ func TestParseByteSize(t *testing.T) {
 func TestExampleConfigLoads(t *testing.T) {
 	if _, err := Load("../../configs/example.yaml"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestM2KeysAndAbsentDestinations(t *testing.T) {
+	c, err := Parse([]byte(`
+retry: { base: 100ms, max: 5s, max_attempts: 3, max_age: 1h, redeliver_share: 0.25 }
+l1: { checkpoint_interval: 500ms, orphan_ttl: 30s, max_records_per_dest: 100, on_quota: dlq_overflow }
+destinations:
+  - { name: archive, type: file, queue: { max_events: 50, max_bytes: 1MiB }, config: { path: x } }
+  - { name: siem, type: sqlite, breaker: { failures: 2, open_for: 1s }, config: { path: y.db } }
+  - { name: soar, type: webhook, config: { url: "http://127.0.0.1:9100/ingest", timeout: 2s } }
+routes:
+  - { match: { class_uid: 3002 }, to: [archive, siem, soar] }
+  - { match: {}, to: [archive, ghost] }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Retry.MaxAttempts != 3 || c.L1.OrphanTTL.Seconds() != 30 || c.L1.OnQuota != "dlq_overflow" {
+		t.Fatalf("retry/l1 not parsed: %+v %+v", c.Retry, c.L1)
+	}
+	if c.Destinations[0].Queue.MaxEvents != 50 || c.Destinations[0].Queue.MaxBatch != DefaultMaxBatch {
+		t.Fatalf("queue: %+v", c.Destinations[0].Queue)
+	}
+	if c.Destinations[1].Breaker.Failures != 2 || c.Destinations[2].Breaker.Failures != DefaultBreakerFailures {
+		t.Fatal("breaker defaults")
+	}
+	if abs := c.AbsentDestinations(); len(abs) != 1 || abs[0] != "ghost" {
+		t.Fatalf("absent = %v", abs)
 	}
 }

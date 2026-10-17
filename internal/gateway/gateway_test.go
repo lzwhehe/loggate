@@ -1,154 +1,25 @@
 package gateway
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
-
-	"github.com/lzwhehe/loggate/internal/config"
 )
-
-func testConfig(t *testing.T, dir string) *config.Config {
-	t.Helper()
-	c, err := config.Parse(fmt.Appendf(nil, `
-node_id: gw-e2e
-data_dir: %q
-wal: { segment_bytes: 64KiB, fsync_interval: 2ms, fsync_max_events: 256 }
-ingest: { http: { listen: "127.0.0.1:0", max_body: 1MiB } }
-destinations:
-  - { name: archive, type: file, config: { path: %q } }
-routes:
-  - { match: {}, to: [archive] }
-`, filepath.Join(dir, "data"), filepath.Join(dir, "out", "archive.jsonl")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c
-}
-
-func startGateway(t *testing.T, cfg *config.Config) *Gateway {
-	t.Helper()
-	g, err := New(context.Background(), cfg, Options{IdemKey: []byte("e2e-test-key-0123456789")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := g.Start(); err != nil {
-		t.Fatal(err)
-	}
-	return g
-}
-
-type acceptResp struct {
-	Accepted int    `json:"accepted"`
-	FirstSeq uint64 `json:"first_seq"`
-}
-
-// postEvents sends workers*perWorker requests of batch events each and
-// returns every acknowledged seq.
-func postEvents(t *testing.T, addr string, workers, perWorker, batch int) []uint64 {
-	t.Helper()
-	var mu sync.Mutex
-	var acked []uint64
-	var wg sync.WaitGroup
-	client := &http.Client{Timeout: 10 * time.Second}
-	for w := range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range perWorker {
-				var body bytes.Buffer
-				body.WriteByte('[')
-				for j := range batch {
-					if j > 0 {
-						body.WriteByte(',')
-					}
-					fmt.Fprintf(&body, `{"worker":%d,"req":%d,"idx":%d,"msg":"login failed for user%d"}`, w, i, j, j)
-				}
-				body.WriteByte(']')
-				resp, err := client.Post("http://"+addr+"/v1/events", "application/json", &body)
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				var ar acceptResp
-				err = json.NewDecoder(resp.Body).Decode(&ar)
-				resp.Body.Close()
-				if resp.StatusCode != http.StatusOK || err != nil || ar.Accepted != batch {
-					t.Errorf("status %d accepted %d err %v", resp.StatusCode, ar.Accepted, err)
-					return
-				}
-				mu.Lock()
-				for k := range batch {
-					acked = append(acked, ar.FirstSeq+uint64(k))
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	return acked
-}
-
-// readSink returns seq -> count and idem_key -> count from the file sink.
-func readSink(t *testing.T, path string) (map[uint64]int, map[string]int) {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	seqs, keys := map[uint64]int{}, map[string]int{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		var line struct {
-			Seq     uint64 `json:"seq"`
-			IdemKey string `json:"idem_key"`
-		}
-		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
-			t.Fatalf("bad line %q: %v", sc.Text(), err)
-		}
-		seqs[line.Seq]++
-		keys[line.IdemKey]++
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return seqs, keys
-}
-
-func checkExactlyOnce(t *testing.T, seqs map[uint64]int, acked []uint64) {
-	t.Helper()
-	ackSet := map[uint64]bool{}
-	for _, s := range acked {
-		if ackSet[s] {
-			t.Fatalf("seq %d acknowledged twice", s)
-		}
-		ackSet[s] = true
-	}
-	for s := range ackSet {
-		if seqs[s] != 1 {
-			t.Fatalf("acked seq %d delivered %d times", s, seqs[s])
-		}
-	}
-	for s, n := range seqs {
-		if !ackSet[s] {
-			t.Fatalf("unacked seq %d delivered %d times", s, n)
-		}
-	}
-}
 
 func TestEndToEnd1000Events(t *testing.T) {
 	dir := t.TempDir()
-	cfg := testConfig(t, dir)
-	g := startGateway(t, cfg)
+	cfg := testCfg(t, dir, `
+destinations:
+  - { name: archive, type: file, config: { path: "$OUT/archive.jsonl" } }
+routes:
+  - { match: {}, to: [archive] }
+`)
+	path := filepath.Join(dir, "out", "archive.jsonl")
+	g := start(t, cfg, nil)
 
 	resp, err := http.Get("http://" + g.Addr() + "/healthz")
 	if err != nil || resp.StatusCode != http.StatusOK {
@@ -160,30 +31,19 @@ func TestEndToEnd1000Events(t *testing.T) {
 	if len(acked) != 1000 {
 		t.Fatalf("acked %d events, want 1000", len(acked))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := g.Shutdown(ctx); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
-	if g.Delivered() != 1000 {
-		t.Fatalf("delivered = %d", g.Delivered())
-	}
+	eventually(t, "1000 deliveries", func() bool { return g.Delivered() == 1000 })
+	shutdown(t, g)
+	checkExactlyOnce(t, "archive", readFileSink(t, path), acked)
 
-	seqs, keys := readSink(t, cfg.Destinations[0].Config["path"].(string))
-	if len(seqs) != 1000 {
-		t.Fatalf("sink has %d distinct seqs, want 1000", len(seqs))
+	// Restart on the same data dir: nothing is replayed (the final
+	// checkpoint covers everything) and seqs are never reused.
+	g2 := start(t, cfg, nil)
+	if g2.Replayed() != 0 {
+		t.Fatalf("replayed %d after graceful shutdown", g2.Replayed())
 	}
-	checkExactlyOnce(t, seqs, acked)
-	if len(keys) != 1000 {
-		t.Fatalf("sink has %d distinct idem keys, want 1000", len(keys))
-	}
-
-	// Restart on the same data dir: recovery keeps seqs monotonic.
-	g2 := startGateway(t, cfg)
 	more := postEvents(t, g2.Addr(), 2, 5, 10)
-	if err := g2.Shutdown(ctx); err != nil {
-		t.Fatalf("shutdown 2: %v", err)
-	}
+	eventually(t, "100 more deliveries", func() bool { return g2.Delivered() == 100 })
+	shutdown(t, g2)
 	var maxOld uint64
 	for _, s := range acked {
 		maxOld = max(maxOld, s)
@@ -193,21 +53,95 @@ func TestEndToEnd1000Events(t *testing.T) {
 			t.Fatalf("seq %d reused after restart (old max %d)", s, maxOld)
 		}
 	}
-	seqs, _ = readSink(t, cfg.Destinations[0].Config["path"].(string))
-	checkExactlyOnce(t, seqs, append(acked, more...))
+	checkExactlyOnce(t, "archive", readFileSink(t, path), append(acked, more...))
+}
+
+// Graceful shutdown with a full L2 queue: what is not delivered is parked
+// (reason Shutdown); the restart redelivers it; dup = 0 even on a
+// non-idempotent sink.
+func TestGracefulRestartNoDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	fakes := map[string]*fakeSink{"a": newFake()}
+	cfg := testCfg(t, dir, `
+destinations:
+  - { name: a, type: file, queue: { max_batch: 10 }, config: { path: "fake:a" } }
+routes:
+  - { match: {}, to: [a] }
+`)
+	f := fakes["a"]
+	f.gate, f.inside = make(chan struct{}), make(chan int, 100)
+	g := start(t, cfg, fakes)
+	acked := post(t, g.Addr(), 200, plain)
+	<-f.inside // first batch in flight, the rest waits in L2
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		done <- g.Shutdown(ctx)
+	}()
+	eventually(t, "draining", func() bool { return g.slot(0).State().String() != "active" })
+	close(f.gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	first := f.count()
+	if first == 0 || first == 200 {
+		t.Fatalf("expected a partial delivery before shutdown, got %d", first)
+	}
+
+	f.gate = nil
+	g2 := start(t, cfg, fakes)
+	if g2.Replayed() != 0 {
+		t.Fatalf("replayed %d after graceful shutdown", g2.Replayed())
+	}
+	eventually(t, "all delivered", func() bool { return f.count() == 200 })
+	eventually(t, "L1 empty", func() bool { return g2.st.Count() == 0 })
+	shutdown(t, g2)
+	checkExactlyOnce(t, "a", f.snapshot(), acked)
 }
 
 func TestShutdownRejectsNewIngest(t *testing.T) {
-	cfg := testConfig(t, t.TempDir())
-	g := startGateway(t, cfg)
+	cfg := testCfg(t, t.TempDir(), `
+destinations:
+  - { name: archive, type: file, config: { path: "$OUT/a.jsonl" } }
+routes:
+  - { match: {}, to: [archive] }
+`)
+	g := start(t, cfg, nil)
 	addr := g.Addr()
-	if err := g.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	shutdown(t, g)
 	if _, err := http.Post("http://"+addr+"/v1/events", "application/json", bytes.NewBufferString(`{"a":1}`)); err == nil {
 		t.Fatal("post after shutdown succeeded")
 	}
 	if err := g.Shutdown(context.Background()); err != nil {
 		t.Fatalf("second shutdown: %v", err)
+	}
+}
+
+func TestStatsEndpoint(t *testing.T) {
+	cfg := testCfg(t, t.TempDir(), `
+destinations:
+  - { name: archive, type: file, config: { path: "$OUT/a.jsonl" } }
+routes:
+  - { match: {}, to: [archive, ghost] }
+`)
+	g := start(t, cfg, nil)
+	defer shutdown(t, g)
+	post(t, g.Addr(), 5, plain)
+	eventually(t, "delivery", func() bool { return g.Delivered() == 5 && g.st.Pending(1) == 5 })
+	resp, err := http.Get("http://" + g.Addr() + "/v1/stats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var st Stats
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Destinations) != 2 || st.Destinations[0].Name != "archive" || st.Destinations[0].Delivered != 5 {
+		t.Fatalf("stats %+v", st)
+	}
+	if gh := st.Destinations[1]; gh.Name != "ghost" || gh.Registry != "absent" || gh.L1Pending != 5 {
+		t.Fatalf("ghost stats %+v", gh)
 	}
 }

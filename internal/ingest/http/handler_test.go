@@ -252,3 +252,32 @@ func TestHealthAndDraining(t *testing.T) {
 		t.Fatalf("draining post = %d", rec.Code)
 	}
 }
+
+func TestBackpressure429AndStats(t *testing.T) {
+	var over bool
+	e := newEnv(t, wal.Options{}, Options{
+		Backpressure: func() bool { return over },
+		RetryAfter:   3 * time.Second,
+		Stats:        func() any { return map[string]int{"l1_pending": 7} },
+	})
+	if rec := e.post(`{"a":1}`); rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	over = true
+	rec := e.post(`{"a":2}`)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "3" {
+		t.Fatalf("status %d retry-after %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if n := len(walEvents(t, e.w)); n != 1 {
+		t.Fatalf("rejected event reached the WAL (%d events)", n)
+	}
+	if e.h.Rejected() != 1 {
+		t.Fatal("rejected counter")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/stats", nil)
+	srec := httptest.NewRecorder()
+	e.h.ServeHTTP(srec, req)
+	if srec.Code != http.StatusOK || !strings.Contains(srec.Body.String(), `"l1_pending":7`) {
+		t.Fatalf("stats: %d %s", srec.Code, srec.Body.String())
+	}
+}
