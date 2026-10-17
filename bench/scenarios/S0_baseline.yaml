@@ -1,0 +1,11 @@
+base: _base.yaml
+name: S0
+title: baseline (no fault)
+description: >
+  Same seed, rate and topology as the fault scenarios with no fault
+  injected. Its p99 in the reference window is the baseline for the
+  "healthy sink p99 increase" criteria (REVIEW_01 item 12).
+fault_window: { start: 30s, end: 150s, label: reference window (no fault) }
+extra_checks:
+  - { metric: dup_raw, dests: [all], op: eq, value: 0 }
+  - { metric: dlq,     dests: [all], op: eq, value: 0 }

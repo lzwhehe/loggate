@@ -1,0 +1,19 @@
+base: _base.yaml
+name: S4b
+title: unregister destination, orphan TTL -> DLQ
+description: >
+  soar is unregistered through the admin API at 60s and never comes back.
+  Its in-flight batch completes, the rest of its queue and every later
+  event for it are parked (NotActive) and, after orphan_ttl = 30 s, moved
+  to the DLQ by the sweeper with reason orphan_ttl_expired. Nothing may be
+  lost; the other sinks are unaffected. (The TTL is not scaled by the
+  profile.)
+gateway:
+  l1: { orphan_ttl: 30s }
+timeline:
+  - { at: 60s, action: unregister, dest: soar }
+fault_window: { start: 60s, end: 300s }
+extra_checks:
+  - { metric: dup_raw, dests: [archive, siem, probe], op: eq, value: 0 }
+  - { metric: "dlq_reason:orphan_ttl_expired", dests: [soar], op: gt, value: 0 }
+  - { metric: dlq, dests: [archive, siem, probe], op: eq, value: 0 }

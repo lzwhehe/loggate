@@ -1,0 +1,22 @@
+base: _base.yaml
+name: S5
+title: disk quota exhausted while a sink is down (Linux only)
+description: >
+  data_dir is limited to 64 MB by the gateway's disk quota (WAL + state.db +
+  DLQ, checked every 200 ms) with 4 MB WAL segments, while soar is down from
+  30s to 150s. Parked events pin WAL segments; once usage exceeds the quota,
+  ingest answers 429 (backpressure) instead of acknowledging. After soar
+  returns, delivery and segment GC free space and ingest resumes. Acked
+  events must not be lost. For a real ENOSPC test mount data_dir on a 64 MB
+  tmpfs (LOGGATE_BENCH_DATA_ROOT); this scenario is skipped on Windows.
+platforms: [linux]
+gateway:
+  wal: { segment_bytes: 4MiB }
+  disk: { max_bytes: 64MiB, check_interval: 200ms }
+  l1: { gc_interval: 2s }
+timeline:
+  - { at: 30s,  action: fault, dest: soar, mode: down }
+  - { at: 150s, action: fault, dest: soar, mode: ok }
+fault_window: { start: 30s, end: 150s }
+extra_checks:
+  - { metric: dup_raw, dests: [archive, siem, probe], op: eq, value: 0 }

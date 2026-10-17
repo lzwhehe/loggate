@@ -1,4 +1,4 @@
-# LogGate example configuration (M2).
+# LogGate example configuration (M3).
 # Only implemented keys are accepted; unknown keys are rejected.
 node_id: gw-1
 data_dir: ./data          # wal/, state.db (bbolt: L1, ckpt, registry), dlq/
@@ -38,6 +38,16 @@ l1:
   sweep_interval: 1s
   gc_interval: 10s
   tombstone_ttl: 24h       # a removed destination's ID is not reused before this
+
+# Disk quota over everything in data_dir (WAL + state.db + DLQ). While usage
+# exceeds max_bytes, ingest answers 429 + Retry-After. 0 = unlimited.
+disk:
+  max_bytes: 0
+  check_interval: 1s
+
+# Token-protected admin API (POST /v1/admin/{register,unregister,shutdown}).
+# Disabled unless a token (>= 16 bytes) is configured.
+# admin: { token_env: LOGGATE_ADMIN_TOKEN }
 
 destinations:
   - name: archive

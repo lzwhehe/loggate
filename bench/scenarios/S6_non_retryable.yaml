@@ -1,0 +1,17 @@
+base: _base.yaml
+name: S6
+title: non-retryable errors (10% HTTP 400)
+description: >
+  From 30s to 150s soar answers 10% of requests with HTTP 400 (seeded,
+  deterministic per request index). A 400 is non-retryable: the whole batch
+  of that request goes to the DLQ (fsync first). The DLQ set must equal the
+  set of events the mock rejected with 4xx; everything else is delivered.
+timeline:
+  - { at: 30s,  action: fault, dest: soar, mode: ok, error_code: 400, error_rate: 0.1, seed: 6 }
+  - { at: 150s, action: fault, dest: soar, mode: ok }
+fault_window: { start: 30s, end: 150s }
+extra_checks:
+  - { metric: dlq_matches_rejected, dests: [soar], op: eq, value: 1, note: "DLQ == mock 4xx log" }
+  - { metric: dlq, dests: [soar], op: gt, value: 0 }
+  - { metric: dlq, dests: [archive, siem, probe], op: eq, value: 0 }
+  - { metric: dup_raw, dests: [archive, siem, probe], op: eq, value: 0 }

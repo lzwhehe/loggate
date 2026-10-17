@@ -1,0 +1,14 @@
+base: _base.yaml
+name: S2
+title: slow sink (500ms, timeout 2s)
+description: >
+  soar answers every request after 500 ms (below the 2 s client timeout)
+  from 30s to 150s. Only soar's own queue should back up (L1 rises, then
+  returns to 0); healthy sinks keep their latency.
+timeline:
+  - { at: 30s,  action: fault, dest: soar, mode: slow, delay_ms: 500 }
+  - { at: 150s, action: fault, dest: soar, mode: ok }
+fault_window: { start: 30s, end: 150s }
+extra_checks:
+  - { metric: dup_raw, dests: [archive, siem, probe], op: eq, value: 0 }
+  - { metric: dlq,     dests: [all], op: eq, value: 0 }

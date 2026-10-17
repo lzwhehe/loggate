@@ -1,0 +1,14 @@
+base: _base.yaml
+name: S1
+title: sink down
+description: >
+  soar's receiver closes its listener (connection refused) at 30s and comes
+  back at 150s. Events for soar are parked in L1 and redelivered; archive,
+  siem and probe must be unaffected.
+timeline:
+  - { at: 30s,  action: fault, dest: soar, mode: down }
+  - { at: 150s, action: fault, dest: soar, mode: ok }
+fault_window: { start: 30s, end: 150s }
+extra_checks:
+  - { metric: dup_raw, dests: [archive, siem, probe], op: eq, value: 0, note: "healthy sinks see no duplicate" }
+  - { metric: dlq,     dests: [all], op: eq, value: 0 }

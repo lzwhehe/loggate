@@ -26,6 +26,8 @@ type Config struct {
 	Idempotency  Idempotency   `yaml:"idempotency"`
 	Retry        Retry         `yaml:"retry"`
 	L1           L1            `yaml:"l1"`
+	Disk         Disk          `yaml:"disk"`
+	Admin        Admin         `yaml:"admin"`
 	Destinations []Destination `yaml:"destinations"`
 	Routes       []Route       `yaml:"routes"`
 }
@@ -103,6 +105,41 @@ type L1 struct {
 	TombstoneTTL      time.Duration `yaml:"tombstone_ttl"`  // default 24h
 }
 
+// Disk configures the data_dir disk quota (DESIGN §4.9, §0.5 item 10).
+// Usage counts everything under data_dir: WAL segments, state.db (L1,
+// checkpoints, registry) and the DLQ. While usage exceeds MaxBytes, ingest
+// answers 429 with Retry-After. Already-acked events are never dropped.
+type Disk struct {
+	MaxBytes      ByteSize      `yaml:"max_bytes"`      // 0 = unlimited (default)
+	CheckInterval time.Duration `yaml:"check_interval"` // default 1s
+}
+
+// Admin enables the token-protected admin endpoints under /v1/admin/
+// (register, unregister, shutdown). They are disabled unless a token is set.
+// Exactly one of Token and TokenEnv may be set.
+type Admin struct {
+	Token    string `yaml:"token"`
+	TokenEnv string `yaml:"token_env"`
+}
+
+// Enabled reports whether an admin token is configured.
+func (a Admin) Enabled() bool { return a.Token != "" || a.TokenEnv != "" }
+
+// Resolve returns the admin token.
+func (a Admin) Resolve() (string, error) {
+	if a.TokenEnv != "" {
+		v := os.Getenv(a.TokenEnv)
+		if len(v) < 16 {
+			return "", fmt.Errorf("admin token: env %s must hold at least 16 bytes", a.TokenEnv)
+		}
+		return v, nil
+	}
+	if len(a.Token) < 16 {
+		return "", errors.New("admin.token must be at least 16 bytes")
+	}
+	return a.Token, nil
+}
+
 // Queue bounds a destination's L2 queue and its batching.
 type Queue struct {
 	MaxEvents int           `yaml:"max_events"` // default 10000
@@ -161,6 +198,7 @@ const (
 	DefaultSweepInterval      = time.Second
 	DefaultGCInterval         = 10 * time.Second
 	DefaultTombstoneTTL       = 24 * time.Hour
+	DefaultDiskCheckInterval  = time.Second
 	DefaultQueueMaxEvents     = 10000
 	DefaultQueueMaxBytes      = 64 << 20
 	DefaultMaxBatch           = 256
@@ -255,6 +293,7 @@ func (c *Config) ApplyDefaults() {
 	if l.OnQuota == "" {
 		l.OnQuota = DefaultOnQuota
 	}
+	setDur(&c.Disk.CheckInterval, DefaultDiskCheckInterval)
 	for i := range c.Destinations {
 		c.Destinations[i].ApplyDefaults()
 	}
@@ -384,6 +423,16 @@ func (c *Config) Validate() error {
 	}
 	if l.OnQuota != "block_all" && l.OnQuota != "dlq_overflow" {
 		add("l1.on_quota must be block_all or dlq_overflow, got %q", l.OnQuota)
+	}
+
+	if c.Disk.MaxBytes < 0 || c.Disk.CheckInterval <= 0 {
+		add("disk: max_bytes must be >= 0 and check_interval > 0")
+	}
+	if c.Admin.Token != "" && c.Admin.TokenEnv != "" {
+		add("admin: set only one of token and token_env")
+	}
+	if c.Admin.Token != "" && len(c.Admin.Token) < 16 {
+		add("admin.token must be at least 16 bytes")
 	}
 
 	names := map[string]bool{}

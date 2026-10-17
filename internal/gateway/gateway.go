@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -89,6 +90,18 @@ type Gateway struct {
 	unregistered map[event.DestID]bool
 	dests        map[string]config.Destination
 
+	origDests   map[string]config.Destination // startup config, for admin re-register
+	adminDigest []byte                        // sha256 of the admin token; nil = admin API off
+
+	shutdownReq  chan struct{}
+	shutdownOnce sync.Once
+
+	diskBytes    atomic.Int64
+	diskOver     atomic.Bool
+	diskStop     chan struct{}
+	diskDone     chan struct{}
+	diskStopOnce sync.Once
+
 	dispDone chan struct{}
 	started  bool
 	stopOnce sync.Once
@@ -121,6 +134,7 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 	g = &Gateway{
 		cfg: cfg, log: opts.Logger, clk: opts.Clock, reg: opts.Sinks,
 		claims: state.NewClaims(), unregistered: map[event.DestID]bool{}, dests: map[string]config.Destination{},
+		origDests: map[string]config.Destination{}, shutdownReq: make(chan struct{}),
 	}
 	g.slots.Store(&slotTable{})
 	defer func() {
@@ -177,6 +191,7 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 	for _, d := range cfg.Destinations {
 		configured = append(configured, d.Name)
 		g.dests[d.Name] = d
+		g.origDests[d.Name] = d
 	}
 	var referenced []string
 	for _, r := range cfg.Routes {
@@ -268,10 +283,18 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 	g.http, err = httpingest.New(g.wal, g.table, httpingest.Options{
 		MaxBody: cfg.Ingest.HTTP.MaxBody.Int64(), Tokens: tokens, Keyer: keyer,
 		Clock: opts.Clock, Logger: opts.Logger,
-		Backpressure: g.deps.OverQuota, Stats: func() any { return g.Stats() },
+		Backpressure: g.backpressure, Stats: func() any { return g.Stats() },
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gateway: %w", err)
+	}
+	if cfg.Admin.Enabled() {
+		tok, err := cfg.Admin.Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("gateway: %w", err)
+		}
+		d := sha256.Sum256([]byte(tok))
+		g.adminDigest = d[:]
 	}
 	return g, nil
 }
@@ -391,6 +414,9 @@ func (g *Gateway) Start() error {
 		}
 	}
 	g.maint.Start()
+	g.checkDisk() // the quota gate is correct before the first request
+	g.diskStop, g.diskDone = make(chan struct{}), make(chan struct{})
+	go g.diskLoop()
 	g.dispDone = make(chan struct{})
 	go func() {
 		defer close(g.dispDone)
@@ -404,7 +430,7 @@ func (g *Gateway) Start() error {
 	}
 	g.ln = ln
 	g.srv = &http.Server{
-		Handler:           g.http,
+		Handler:           g.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ErrorLog:          slog.NewLogLogger(g.log.Handler(), slog.LevelWarn),
 	}
@@ -552,6 +578,8 @@ type Stats struct {
 	Rejected     uint64      `json:"ingest_rejected_429"`
 	Destinations []DestStats `json:"destinations"`
 	Undecodable  uint64      `json:"undecodable"`
+	DiskBytes    int64       `json:"disk_bytes"`
+	DiskOver     bool        `json:"disk_over_quota"`
 }
 
 // DestStats is per-destination state.
@@ -571,7 +599,8 @@ func (g *Gateway) Stats() Stats {
 		NextSeq: g.wal.NextSeq(), Cursor: g.trackers.Cursor(), Replayed: g.replayed,
 		L1Records: g.st.Count(), DLQTotal: g.dlq.Total(), Swept: g.maint.Swept(),
 		WALSegments: len(g.wal.Segments()), SegmentsGCed: g.maint.Removed(),
-		Backpressure: g.deps.OverQuota(), Rejected: g.http.Rejected(), Undecodable: undec,
+		Backpressure: g.backpressure(), Rejected: g.http.Rejected(), Undecodable: undec,
+		DiskBytes: g.diskBytes.Load(), DiskOver: g.diskOver.Load(),
 	}
 	g.regMu.RLock()
 	entries := make([]state.RegEntry, 0, len(g.entries))
@@ -618,6 +647,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 			<-g.dispDone // never blocks for long: dispatch is non-blocking
 		}
 		g.maint.Stop()
+		g.stopDiskLoop()
 		var wg sync.WaitGroup
 		for _, s := range g.slots.Load() {
 			if s == nil || s.State() != worker.Active {
@@ -663,6 +693,7 @@ func (g *Gateway) crash() {
 			_ = g.srv.Close()
 		}
 		g.maint.Stop()
+		g.stopDiskLoop()
 		for _, s := range g.slots.Load() {
 			if s != nil {
 				s.Abort()

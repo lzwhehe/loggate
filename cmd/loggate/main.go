@@ -33,6 +33,8 @@ func run() error {
 		return err
 	}
 
+	// SIGTERM is not delivered on Windows; there the admin API
+	// (POST /v1/admin/shutdown) triggers the same graceful path.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -45,7 +47,10 @@ func run() error {
 		return err
 	}
 
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case <-g.ShutdownRequested(): // POST /v1/admin/shutdown (Windows has no SIGTERM)
+	}
 	stop() // a second signal kills the process immediately
 	logger.Info("shutting down", "timeout", *shutdownTimeout)
 	sctx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)

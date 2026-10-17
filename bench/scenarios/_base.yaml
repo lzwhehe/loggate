@@ -1,0 +1,48 @@
+# Shared topology for every fault scenario (DESIGN §10.3). Scenario files
+# name this file as `base:` and are deep-merged on top (maps merge, lists
+# and scalars replace). Offsets and durations are written at full scale;
+# the profile scales them (quick: x0.2 at 200 eps; full: x1 at 2000 eps).
+duration: 300s
+
+# Load mix: every event carries "class"; routing is on that field only.
+classes:
+  - { name: auth, weight: 0.5 }
+  - { name: net,  weight: 0.3 }
+  - { name: app,  weight: 0.2 }
+
+# archive(file, not idempotent), siem(sqlite, idempotent), soar(webhook ->
+# mocksink, the sink we break). probe is a second, always-healthy mocksink
+# webhook: it measures healthy-sink latency at an independent receiver
+# (DESIGN §0.5 item 12), since file/sqlite sinks have no receive clock.
+destinations:
+  - { name: archive, type: file }
+  - { name: siem,    type: sqlite }
+  - name: soar
+    type: webhook
+    mock: true
+    config: { timeout: 2s, batch: true }
+    breaker: { failures: 5, open_for: 10s }
+  - name: probe
+    type: webhook
+    mock: true
+    config: { timeout: 2s, batch: true }
+
+# The oracle's routing table (reconcile evaluates it with its own code; the
+# gateway config is generated from it). First match wins.
+routes:
+  - { match: { class: auth }, to: [archive, siem, soar, probe] }
+  - { match: { class: net },  to: [archive, siem, probe] }
+  - { match: {},              to: [archive] }
+
+# Merged into the generated gateway config (not scaled by the profile).
+gateway:
+  wal: { segment_bytes: 64MiB, fsync_interval: 10ms, fsync_max_events: 512 }
+  retry: { base: 200ms, max: 30s, max_attempts: 20, max_age: 24h }
+  l1: { checkpoint_interval: 1s, sweep_interval: 1s, gc_interval: 10s }
+
+# Common pass criteria. Scenarios add theirs under extra_checks.
+checks:
+  - { metric: lost,              dests: [all], op: eq, value: 0, note: "no acked event lost" }
+  - { metric: misrouted,         dests: [all], op: eq, value: 0, note: "oracle routing agrees" }
+  - { metric: dlq_and_delivered, dests: [all], op: eq, value: 0, note: "never both delivered and dead" }
+  - { metric: dup_stored,        dests: [siem], op: eq, value: 0, note: "idempotent sink stores no duplicate" }

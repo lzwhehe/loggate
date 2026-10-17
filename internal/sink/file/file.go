@@ -51,12 +51,39 @@ func (s *Sink) Init(_ context.Context, cfg map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return fmt.Errorf("create dir for %s: %w", p, err)
 	}
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", p, err)
 	}
+	if err := terminateTornLine(f); err != nil {
+		f.Close()
+		return fmt.Errorf("%s: %w", p, err)
+	}
 	s.path, s.f, s.w = p, f, bufio.NewWriterSize(f, 256<<10)
 	return nil
+}
+
+// terminateTornLine appends a newline if the file does not end with one.
+// A process killed in the middle of a write leaves a partial last line;
+// without this, the first record after a restart would be glued to that
+// fragment and unreadable by line-oriented consumers.
+func terminateTornLine(f *os.File) error {
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if st.Size() == 0 {
+		return nil
+	}
+	var last [1]byte
+	if _, err := f.ReadAt(last[:], st.Size()-1); err != nil {
+		return fmt.Errorf("read last byte: %w", err)
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	_, err = f.Write([]byte{'\n'})
+	return err
 }
 
 // Write appends the batch. A marshal failure affects only that envelope; a

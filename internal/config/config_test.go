@@ -95,6 +95,18 @@ routes: [{ match: {}, to: [a] }]`, "invalid size"},
 ingest: { http: { tokens: [{ source: s, token: t, token_env: E }] } }
 destinations: [{ name: a, type: file, config: { path: x } }]
 routes: [{ match: {}, to: [a] }]`, "exactly one of token"},
+		"admin both": {`
+admin: { token: "0123456789abcdef", token_env: E }
+destinations: [{ name: a, type: file, config: { path: x } }]
+routes: [{ match: {}, to: [a] }]`, "only one of token"},
+		"admin short": {`
+admin: { token: short }
+destinations: [{ name: a, type: file, config: { path: x } }]
+routes: [{ match: {}, to: [a] }]`, "at least 16 bytes"},
+		"disk negative interval": {`
+disk: { max_bytes: 1MiB, check_interval: -1s }
+destinations: [{ name: a, type: file, config: { path: x } }]
+routes: [{ match: {}, to: [a] }]`, "disk:"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

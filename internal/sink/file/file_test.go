@@ -73,3 +73,49 @@ func TestInitRequiresPath(t *testing.T) {
 		t.Fatal("Init without path succeeded")
 	}
 }
+
+// A writer killed mid-line leaves a fragment; the next Init terminates it
+// so the first new record starts on its own line.
+func TestInitTerminatesTornLine(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "out.jsonl")
+	if err := os.WriteFile(path, []byte("{\"seq\":1}\n{\"seq\":2,\"idem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	if err := s.Init(ctx, map[string]any{"path": path}); err != nil {
+		t.Fatal(err)
+	}
+	if errs := s.Write(ctx, []*sink.Envelope{{Seq: 3, Event: &event.LogEvent{Seq: 3}}}); errs[0] != nil {
+		t.Fatal(errs[0])
+	}
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.Open(path)
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	var good int
+	for sc.Scan() {
+		var m map[string]any
+		if json.Unmarshal(sc.Bytes(), &m) == nil {
+			good++
+		}
+	}
+	if good != 2 || b[len(b)-1] != '\n' {
+		t.Fatalf("want 2 parseable lines (fragment isolated), got %d in %q", good, b)
+	}
+	// Re-opening a clean file adds nothing.
+	s2 := New()
+	if err := s2.Init(ctx, map[string]any{"path": path}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s2.Close(ctx)
+	if b2, _ := os.ReadFile(path); len(b2) != len(b) {
+		t.Fatalf("clean reopen changed the file: %d -> %d bytes", len(b), len(b2))
+	}
+}

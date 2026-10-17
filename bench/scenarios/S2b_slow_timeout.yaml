@@ -1,0 +1,16 @@
+base: _base.yaml
+name: S2b
+title: slow sink beyond timeout (3s, timeout 2s)
+description: >
+  soar answers after 3 s while the gateway gives up after 2 s. The receiver
+  still processes every request it got, so soar sees duplicates; that is
+  expected and reported (dup_raw), not a failure. A receiver honouring
+  Idempotency-Key would store none of them (dup_stored).
+timeline:
+  - { at: 30s,  action: fault, dest: soar, mode: slow, delay_ms: 3000 }
+  - { at: 150s, action: fault, dest: soar, mode: ok }
+fault_window: { start: 30s, end: 150s }
+extra_checks:
+  - { metric: dup_raw,    dests: [archive, siem, probe], op: eq, value: 0 }
+  - { metric: dup_stored, dests: [soar], op: eq, value: 0, note: "duplicates carry the same idem key" }
+  - { metric: dlq,        dests: [all], op: eq, value: 0 }

@@ -1,0 +1,22 @@
+base: _base.yaml
+name: S3
+title: hard kill under load (3 cycles)
+description: >
+  The gateway process is hard-killed (SIGKILL on Linux, TerminateProcess on
+  Windows) at 60s, 120s and 180s and restarted 10 s later each time, on the
+  same data dir. Requests during the outage fail at the client and are not
+  in the promised set. Replay after each restart may duplicate up to about
+  one checkpoint interval of events on non-idempotent sinks (archive raw,
+  webhook raw); siem must store none. kill -9 is not power loss: the page
+  cache survives.
+timeline:
+  - { at: 60s,  action: kill }
+  - { at: 70s,  action: start }
+  - { at: 120s, action: kill }
+  - { at: 130s, action: start }
+  - { at: 180s, action: kill }
+  - { at: 190s, action: start }
+fault_window: { start: 60s, end: 190s }
+extra_checks:
+  - { metric: dup_stored, dests: [soar, probe], op: eq, value: 0, note: "duplicates carry the same idem key" }
+  - { metric: dlq,        dests: [all], op: eq, value: 0 }

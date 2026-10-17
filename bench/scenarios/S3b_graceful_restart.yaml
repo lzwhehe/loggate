@@ -1,0 +1,16 @@
+base: _base.yaml
+name: S3b
+title: graceful restart
+description: >
+  Graceful stop at 60s (SIGTERM on Linux; POST /v1/admin/shutdown on
+  Windows, which has no SIGTERM), restart at 70s. A graceful stop finishes
+  in-flight batches, parks the rest and writes a final checkpoint, so
+  nothing is replayed: dup must be 0 on every sink (assuming no request
+  times out ambiguously during the stop).
+timeline:
+  - { at: 60s, action: stop }
+  - { at: 70s, action: start }
+fault_window: { start: 60s, end: 70s }
+extra_checks:
+  - { metric: dup_raw, dests: [all], op: eq, value: 0 }
+  - { metric: dlq,     dests: [all], op: eq, value: 0 }
