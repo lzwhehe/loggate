@@ -1,0 +1,7 @@
+go test fuzz v1
+string("\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3\xd3")
+string("0")
+string("0")
+uint64(9)
+byte('0')
+byte('&')

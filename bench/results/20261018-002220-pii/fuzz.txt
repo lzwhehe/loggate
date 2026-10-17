@@ -1,0 +1,13 @@
+# fuzz runs, 2026-10-18T00:26:07+09:00, go version go1.27.0 windows/amd64; property: no panic, and output contains no boundary-delimited token that passes ID-card or bank-card validation (independent regexp-based oracle in fuzz_test.go). Progress lines trimmed to the last one.
+## go test ./internal/mask -run '^$' -fuzz '^FuzzMaskString$' -fuzztime 20s
+fuzz: elapsed: 0s, gathering baseline coverage: 0/367 completed
+fuzz: elapsed: 1s, gathering baseline coverage: 367/367 completed, now fuzzing with 16 workers
+fuzz: elapsed: 20s, execs: 2956359 (146912/sec), new interesting: 6 (total: 373)
+PASS
+ok  	github.com/lzwhehe/loggate/internal/mask	20.356s
+## go test ./internal/mask -run '^$' -fuzz '^FuzzMaskEmbedded$' -fuzztime 20s
+fuzz: elapsed: 0s, gathering baseline coverage: 0/390 completed
+fuzz: elapsed: 1s, gathering baseline coverage: 390/390 completed, now fuzzing with 16 workers
+fuzz: elapsed: 20s, execs: 3093917 (150636/sec), new interesting: 7 (total: 397)
+PASS
+ok  	github.com/lzwhehe/loggate/internal/mask	20.320s

@@ -1,12 +1,16 @@
 // Package httpingest implements the HTTP JSON input:
 //
-//	POST /v1/events   body: one JSON object or an array of objects
+//	POST /v1/events   body: one JSON object or an array of objects, or
+//	                  (Content-Type: text/plain) one log line per line
 //	GET  /healthz
 //	GET  /v1/stats    delivery statistics (if configured)
 //
+// Each event is normalised to OCSF, masked, and routed in memory; only the
+// masked event is appended to the WAL, so raw PII never reaches disk.
 // A 200 response is sent only after every event in the request has been
 // fsynced to the WAL; any WAL failure yields 503 and nothing is
-// acknowledged (the client must retry).
+// acknowledged (the client must retry). Error responses and logs never
+// echo request content (only offsets and indexes).
 package httpingest
 
 import (
@@ -27,6 +31,8 @@ import (
 
 	"github.com/lzwhehe/loggate/internal/clock"
 	"github.com/lzwhehe/loggate/internal/event"
+	"github.com/lzwhehe/loggate/internal/mask"
+	"github.com/lzwhehe/loggate/internal/normalize"
 	"github.com/lzwhehe/loggate/internal/wal"
 )
 
@@ -59,6 +65,9 @@ type Options struct {
 	RetryAfter time.Duration
 	// Stats, if set, serves GET /v1/stats as JSON.
 	Stats func() any
+	// Masker masks every event before it is routed and appended; nil
+	// disables masking (benchmarks only).
+	Masker *mask.Engine
 }
 
 type tokenEntry struct {
@@ -80,6 +89,7 @@ type Handler struct {
 	backp    func() bool
 	retryAft string
 	stats    func() any
+	masker   *mask.Engine
 	rejected atomic.Uint64
 }
 
@@ -103,7 +113,7 @@ func New(app Appender, router Router, opts Options) (*Handler, error) {
 	h := &Handler{
 		wal: app, router: router, keyer: opts.Keyer, clock: opts.Clock,
 		log: opts.Logger.With("component", "ingest.http"), maxBody: opts.MaxBody,
-		backp: opts.Backpressure, stats: opts.Stats,
+		backp: opts.Backpressure, stats: opts.Stats, masker: opts.Masker,
 		retryAft: strconv.Itoa(int(max(1, opts.RetryAfter.Round(time.Second)/time.Second))),
 	}
 	for tok, src := range opts.Tokens {
@@ -202,23 +212,33 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"read body failed"})
 		return
 	}
-	elems, err := splitEvents(body)
+	var evs []normalize.Event
+	now := h.clock.Now()
+	if isText(r.Header.Get("Content-Type")) {
+		evs, err = splitLines(body, now)
+	} else {
+		evs, err = splitEvents(body, now)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 		return
 	}
 
-	now := h.clock.Now().UnixNano()
-	items := make([]wal.Item, len(elems))
-	for i, el := range elems {
+	items := make([]wal.Item, len(evs))
+	for i, n := range evs {
 		ev := &event.LogEvent{
 			SourceID:   sourceID,
-			ReceivedAt: now,
-			Time:       now,
-			// TODO(M4): normalise to OCSF and mask PII before this point;
-			// the WAL must only ever hold masked events.
-			Fields: map[string]any{"unmapped": el.fields},
-			Raw:    el.raw,
+			ReceivedAt: now.UnixNano(),
+			Time:       n.Time,
+			ClassUID:   n.ClassUID,
+			ActivityID: n.ActivityID,
+			StatusID:   n.StatusID,
+			SeverityID: n.SeverityID,
+			Fields:     n.Fields,
+		}
+		if h.masker != nil {
+			res := h.masker.MaskEvent(ev.Fields)
+			ev.DataClass, ev.DataLevel = res.Classes(), res.Level
 		}
 		ev.Targets = h.router.Route(ev)
 		items[i] = wal.Item{Targets: ev.Targets, Encode: h.encoder(ev)}
@@ -244,13 +264,41 @@ func (h *Handler) encoder(ev *event.LogEvent) func(seq uint64) ([]byte, error) {
 	}
 }
 
-type element struct {
-	fields map[string]any
-	raw    []byte
+func isText(ct string) bool {
+	mt, _, _ := strings.Cut(ct, ";")
+	return strings.EqualFold(strings.TrimSpace(mt), "text/plain")
 }
 
-// splitEvents accepts a single JSON object or an array of objects.
-func splitEvents(body []byte) ([]element, error) {
+// splitLines normalises a text/plain body: one event per non-empty line
+// (LF or CRLF).
+func splitLines(body []byte, now time.Time) ([]normalize.Event, error) {
+	var out []normalize.Event
+	for line := range bytes.SplitSeq(body, []byte{'\n'}) {
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		out = append(out, normalize.Text(string(line), now))
+	}
+	if len(out) == 0 {
+		return nil, errors.New("empty body")
+	}
+	return out, nil
+}
+
+// jsonErr describes a decode error by position only: encoding/json error
+// strings can quote input bytes, which may be PII.
+func jsonErr(prefix string, err error) error {
+	var se *json.SyntaxError
+	if errors.As(err, &se) {
+		return fmt.Errorf("%s: invalid JSON at offset %d", prefix, se.Offset)
+	}
+	return fmt.Errorf("%s: invalid JSON", prefix)
+}
+
+// splitEvents accepts a single JSON object or an array of objects and
+// normalises each.
+func splitEvents(body []byte, now time.Time) ([]normalize.Event, error) {
 	body = bytes.TrimSpace(body)
 	if len(body) == 0 {
 		return nil, errors.New("empty body")
@@ -261,15 +309,15 @@ func splitEvents(body []byte) ([]element, error) {
 		raws = []json.RawMessage{body}
 	case '[':
 		if err := json.Unmarshal(body, &raws); err != nil {
-			return nil, fmt.Errorf("invalid JSON array: %w", err)
+			return nil, jsonErr("array", err)
 		}
 		if len(raws) == 0 {
 			return nil, errors.New("empty event array")
 		}
 	default:
-		return nil, errors.New("body must be a JSON object or an array of objects")
+		return nil, errors.New("body must be a JSON object or an array of objects (or Content-Type: text/plain)")
 	}
-	out := make([]element, len(raws))
+	out := make([]normalize.Event, len(raws))
 	for i, raw := range raws {
 		raw = bytes.TrimSpace(raw)
 		if len(raw) == 0 || raw[0] != '{' {
@@ -279,12 +327,12 @@ func splitEvents(body []byte) ([]element, error) {
 		dec.UseNumber()
 		var m map[string]any
 		if err := dec.Decode(&m); err != nil {
-			return nil, fmt.Errorf("event %d: invalid JSON: %w", i, err)
+			return nil, jsonErr(fmt.Sprintf("event %d", i), err)
 		}
 		if dec.More() {
 			return nil, fmt.Errorf("event %d: trailing data", i)
 		}
-		out[i] = element{fields: m, raw: raw}
+		out[i] = normalize.JSON(m, now)
 	}
 	return out, nil
 }

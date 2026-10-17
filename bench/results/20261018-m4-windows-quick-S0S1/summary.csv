@@ -1,0 +1,9 @@
+scenario,profile,rep,run_id,dest,type,expected,received_unique,lost,dup_raw,dup_stored,dlq,extra,misrouted,recovery_s,p50_all_ms,p99_all_ms,p999_all_ms,p99_baseline_ms,p99_during_ms,p99_after_ms,pass
+S0,quick,1,S0-r1-984cbfc4,archive,file,12000,12000,0,0,0,0,0,0,0.050,45.496,80.305,80.610,80.179,80.335,80.300,true
+S0,quick,1,S0-r1-984cbfc4,probe,webhook,9696,9696,0,0,0,0,0,0,0.000,21.456,32.409,33.133,32.280,32.428,32.403,true
+S0,quick,1,S0-r1-984cbfc4,siem,sqlite,9696,9696,0,0,0,0,0,0,0.000,45.479,80.336,80.660,80.402,80.338,80.311,true
+S0,quick,1,S0-r1-984cbfc4,soar,webhook,6113,6113,0,0,0,0,0,0,0.000,21.639,32.436,32.908,32.364,32.430,32.446,true
+S1,quick,1,S1-r1-a023afc3,archive,file,12000,12000,0,0,0,0,0,0,0.050,45.483,80.271,80.716,80.161,80.246,80.357,true
+S1,quick,1,S1-r1-a023afc3,probe,webhook,9696,9696,0,0,0,0,0,0,0.002,21.462,32.432,33.211,33.004,32.461,32.405,true
+S1,quick,1,S1-r1-a023afc3,siem,sqlite,9696,9696,0,0,0,0,0,0,0.050,45.458,80.270,80.735,80.171,80.249,80.305,true
+S1,quick,1,S1-r1-a023afc3,soar,webhook,6113,6113,0,0,0,0,0,0,6.591,991.234,29703.144,30313.144,32.666,30093.144,6321.344,true

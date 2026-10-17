@@ -1,0 +1,36 @@
+{
+  "activity_id": 1,
+  "activity_name": "Logon",
+  "auth_protocol": "password",
+  "auth_protocol_id": 99,
+  "category_name": "Identity \u0026 Access Management",
+  "category_uid": 3,
+  "class_name": "Authentication",
+  "class_uid": 3002,
+  "metadata": {
+    "log_name": "json",
+    "product": {
+      "name": "LogGate",
+      "vendor_name": "LogGate"
+    },
+    "version": "1.3.0"
+  },
+  "severity": "Low",
+  "severity_id": 2,
+  "src_endpoint": {
+    "ip": "192.0.2.33",
+    "port": 50211
+  },
+  "status": "Failure",
+  "status_id": 2,
+  "time": 1792202400000,
+  "type_name": "Authentication: Logon",
+  "type_uid": 300201,
+  "unmapped": {
+    "app": "vpn",
+    "attempt": 3
+  },
+  "user": {
+    "name": "bob"
+  }
+}

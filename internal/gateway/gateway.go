@@ -29,6 +29,7 @@ import (
 	"github.com/lzwhehe/loggate/internal/dlq"
 	"github.com/lzwhehe/loggate/internal/event"
 	httpingest "github.com/lzwhehe/loggate/internal/ingest/http"
+	"github.com/lzwhehe/loggate/internal/mask"
 	"github.com/lzwhehe/loggate/internal/route"
 	"github.com/lzwhehe/loggate/internal/sink"
 	filesink "github.com/lzwhehe/loggate/internal/sink/file"
@@ -48,6 +49,9 @@ type Options struct {
 	WALFS wal.FS
 	// IdemKey overrides the HMAC key otherwise read from the environment.
 	IdemKey []byte
+	// MaskKey overrides the masking hash key otherwise read from the
+	// environment.
+	MaskKey []byte
 	// Sinks overrides the sink type registry (tests register fakes).
 	Sinks *sink.Registry
 	// BackoffSeed makes retry jitter reproducible; 0 = random.
@@ -70,6 +74,7 @@ type Gateway struct {
 	wal      *wal.WAL
 	dlq      *dlq.Log
 	table    *route.Table
+	masker   *mask.Engine
 	trackers *tracker.Set
 	claims   *state.Claims
 	deps     *worker.Deps
@@ -215,6 +220,18 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 	if err != nil {
 		return nil, fmt.Errorf("gateway: %w", err)
 	}
+	for _, d := range cfg.Destinations {
+		if err := g.setMaxLevel(rec.Entries[d.Name].ID, d); err != nil {
+			return nil, err
+		}
+	}
+	if !cfg.Masking.Disabled {
+		if g.masker, err = newMasker(cfg, opts); err != nil {
+			return nil, err
+		}
+	} else {
+		g.log.Warn("masking disabled: the WAL, L1 and DLQ hold unmasked input")
+	}
 
 	// 4. Delivery machinery.
 	g.replayFrom = 1
@@ -284,6 +301,7 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 		MaxBody: cfg.Ingest.HTTP.MaxBody.Int64(), Tokens: tokens, Keyer: keyer,
 		Clock: opts.Clock, Logger: opts.Logger,
 		Backpressure: g.backpressure, Stats: func() any { return g.Stats() },
+		Masker: g.masker,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gateway: %w", err)
@@ -297,6 +315,47 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 		g.adminDigest = d[:]
 	}
 	return g, nil
+}
+
+func (g *Gateway) setMaxLevel(id event.DestID, d config.Destination) error {
+	l, err := event.ParseLevel(d.MaxLevel)
+	if err != nil {
+		return fmt.Errorf("gateway: destination %s: %w", d.Name, err)
+	}
+	g.table.SetMaxLevel(id, l)
+	return nil
+}
+
+func newMasker(cfg *config.Config, opts Options) (*mask.Engine, error) {
+	mc, err := cfg.Masking.EngineConfig()
+	if err != nil {
+		return nil, fmt.Errorf("gateway: %w", err)
+	}
+	mc.HMACKey = opts.MaskKey
+	if mc.HMACKey == nil {
+		if v := os.Getenv(cfg.Masking.HMACKeyEnv); v != "" {
+			if len(v) < 16 {
+				return nil, fmt.Errorf("gateway: %s must be at least 16 bytes", cfg.Masking.HMACKeyEnv)
+			}
+			mc.HMACKey = []byte(v)
+		} else {
+			mc.HMACKey = make([]byte, 32)
+			if _, err := rand.Read(mc.HMACKey); err != nil {
+				return nil, fmt.Errorf("gateway: random mask key: %w", err)
+			}
+			for _, p := range mc.Fields {
+				if p == mask.PolicyHash {
+					opts.Logger.Warn("masking HMAC key not set; hash values use a random per-process key and are not stable across restarts", "env", cfg.Masking.HMACKeyEnv)
+					break
+				}
+			}
+		}
+	}
+	m, err := mask.New(mc)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: %w", err)
+	}
+	return m, nil
 }
 
 func (g *Gateway) slotConfig(id event.DestID, d config.Destination) worker.Config {
@@ -503,6 +562,9 @@ func (g *Gateway) Register(ctx context.Context, d config.Destination) error {
 	if err != nil {
 		return fmt.Errorf("gateway: register %s: %w", d.Name, err)
 	}
+	if err := g.setMaxLevel(id, d); err != nil {
+		return err
+	}
 	slot := worker.New(g.slotConfig(id, d), s, g.deps)
 	if err := slot.Start(g.started); err != nil {
 		return err
@@ -580,6 +642,7 @@ type Stats struct {
 	Undecodable  uint64      `json:"undecodable"`
 	DiskBytes    int64       `json:"disk_bytes"`
 	DiskOver     bool        `json:"disk_over_quota"`
+	Masking      *mask.Stats `json:"masking,omitempty"`
 }
 
 // DestStats is per-destination state.
@@ -590,6 +653,8 @@ type DestStats struct {
 	Checkpoint uint64 `json:"checkpoint"`
 	Unresolved int    `json:"unresolved"`
 	DLQ        uint64 `json:"dlq"`
+	// RouteLevelBlocked counts events kept away by max_level.
+	RouteLevelBlocked uint64 `json:"route_level_blocked"`
 }
 
 // Stats returns a snapshot of delivery state.
@@ -601,6 +666,10 @@ func (g *Gateway) Stats() Stats {
 		WALSegments: len(g.wal.Segments()), SegmentsGCed: g.maint.Removed(),
 		Backpressure: g.backpressure(), Rejected: g.http.Rejected(), Undecodable: undec,
 		DiskBytes: g.diskBytes.Load(), DiskOver: g.diskOver.Load(),
+	}
+	if g.masker != nil {
+		ms := g.masker.Stats()
+		s.Masking = &ms
 	}
 	g.regMu.RLock()
 	entries := make([]state.RegEntry, 0, len(g.entries))
@@ -614,6 +683,7 @@ func (g *Gateway) Stats() Stats {
 		ds := DestStats{
 			Registry: string(e.State), Watermark: g.trackers.Watermark(e.ID), Checkpoint: g.st.Checkpoint(e.ID),
 			Unresolved: g.trackers.Unresolved(e.ID), DLQ: g.dlq.Count(e.ID),
+			RouteLevelBlocked: g.table.LevelBlocked(e.ID),
 		}
 		if sl := g.slot(e.ID); sl != nil {
 			ds.Stats = sl.Stats()

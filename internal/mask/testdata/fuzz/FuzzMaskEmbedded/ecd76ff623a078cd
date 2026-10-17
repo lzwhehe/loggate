@@ -1,0 +1,7 @@
+go test fuzz v1
+string("0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A")
+string("AA0 ")
+string(" 0A0A0A0AA0A")
+uint64(1)
+byte('\u009b')
+byte('/')

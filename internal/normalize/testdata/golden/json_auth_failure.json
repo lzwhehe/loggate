@@ -1,0 +1,1 @@
+{"event":{"type":"auth","outcome":"failure","action":"login"},"user":{"name":"bob"},"source":{"ip":"192.0.2.33","port":50211},"method":"password","@timestamp":"2026-10-17T02:00:00Z","app":"vpn","attempt":3}

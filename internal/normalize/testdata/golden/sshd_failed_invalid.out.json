@@ -1,0 +1,34 @@
+{
+  "activity_id": 1,
+  "activity_name": "Logon",
+  "auth_protocol": "ssh2/password",
+  "auth_protocol_id": 99,
+  "category_name": "Identity \u0026 Access Management",
+  "category_uid": 3,
+  "class_name": "Authentication",
+  "class_uid": 3002,
+  "metadata": {
+    "log_name": "sshd",
+    "product": {
+      "name": "LogGate",
+      "vendor_name": "LogGate"
+    },
+    "version": "1.3.0"
+  },
+  "raw_data": "Oct 17 10:00:02 bastion sshd[2212]: Failed password for invalid user admin from 198.51.100.7 port 40022 ssh2",
+  "severity": "Low",
+  "severity_id": 2,
+  "src_endpoint": {
+    "ip": "198.51.100.7",
+    "port": 40022
+  },
+  "status": "Failure",
+  "status_detail": "invalid user",
+  "status_id": 2,
+  "time": 1792204200000,
+  "type_name": "Authentication: Logon",
+  "type_uid": 300201,
+  "user": {
+    "name": "admin"
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loggate.invalid/ocsf-subset-1.3.0.json",
+  "title": "LogGate OCSF 1.3.0 subset: Authentication (3002) and Base Event (0)",
+  "type": "object",
+  "required": ["class_uid", "class_name", "category_uid", "activity_id", "type_uid", "severity_id", "time", "metadata"],
+  "properties": {
+    "class_uid": {"enum": [0, 3002]},
+    "class_name": {"type": "string"},
+    "category_uid": {"enum": [0, 3]},
+    "category_name": {"type": "string"},
+    "activity_id": {"type": "integer", "minimum": 0, "maximum": 99},
+    "activity_name": {"type": "string"},
+    "type_uid": {"type": "integer", "minimum": 0},
+    "type_name": {"type": "string"},
+    "severity_id": {"enum": [0, 1, 2, 3, 4, 5, 6, 99]},
+    "severity": {"type": "string"},
+    "status_id": {"enum": [0, 1, 2, 99]},
+    "status": {"type": "string"},
+    "status_detail": {"type": "string"},
+    "time": {"type": "integer", "minimum": 0},
+    "raw_data": {"type": "string"},
+    "unmapped": {"type": "object"},
+    "metadata": {
+      "type": "object",
+      "required": ["version", "product"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^1[.][0-9]+[.][0-9]+$"},
+        "log_name": {"type": "string"},
+        "product": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {"name": {"type": "string"}, "vendor_name": {"type": "string"}}
+        }
+      }
+    },
+    "user": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}},
+    "src_endpoint": {
+      "type": "object",
+      "properties": {
+        "ip": {"type": "string"},
+        "port": {"type": "integer", "minimum": 0, "maximum": 65535}
+      }
+    },
+    "auth_protocol": {"type": "string"},
+    "auth_protocol_id": {"enum": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 99]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"class_uid": {"const": 3002}}},
+      "then": {
+        "required": ["status_id", "auth_protocol_id"],
+        "properties": {
+          "category_uid": {"const": 3},
+          "class_name": {"const": "Authentication"},
+          "activity_id": {"enum": [0, 1, 2, 3, 4, 5, 6, 7, 99]},
+          "type_uid": {"minimum": 300200, "maximum": 300299}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"class_uid": {"const": 0}}},
+      "then": {
+        "anyOf": [{"required": ["raw_data"]}, {"required": ["unmapped"]}],
+        "properties": {"category_uid": {"const": 0}, "class_name": {"const": "Base Event"}}
+      }
+    }
+  ]
+}

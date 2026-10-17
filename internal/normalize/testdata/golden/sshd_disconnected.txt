@@ -1,0 +1,1 @@
+Oct 17 10:00:06 bastion sshd[2216]: Disconnected from user alice 192.0.2.10 port 51122

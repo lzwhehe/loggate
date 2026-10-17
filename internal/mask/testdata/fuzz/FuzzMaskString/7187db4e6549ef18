@@ -1,0 +1,2 @@
+go test fuzz v1
+string("17000000000 0A0A0٘ڨ0\xee\xb900A0\xf4\x82\xc80A0A0հ0ۏ00A0A0Ʀ0\xed\x8900@0A0\xe9\xb8\xed\xee\xb00ɟ\xe3\x9a0֯ͅ0\xe6\xb000")

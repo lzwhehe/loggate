@@ -1,4 +1,4 @@
-# LogGate example configuration (M3).
+# LogGate example configuration (M4).
 # Only implemented keys are accepted; unknown keys are rejected.
 node_id: gw-1
 data_dir: ./data          # wal/, state.db (bbolt: L1, ckpt, registry), dlq/
@@ -49,6 +49,25 @@ disk:
 # Disabled unless a token (>= 16 bytes) is configured.
 # admin: { token_env: LOGGATE_ADMIN_TOKEN }
 
+# PII masking (DESIGN §7). Runs before the WAL append: unmasked PII never
+# reaches disk. Every field not listed is "scan"ned (raw_data and unmapped
+# included); masking errors replace the value with "[REDACTED:error]".
+masking:
+  hmac_key_env: LOGGATE_HMAC_KEY   # key for "hash" (>= 16 bytes); unset = random per process
+  default: scan                    # scan | drop (fail-closed for unknown fields) | keep | hash | mask
+  detectors: [id_card, bank_card, phone, email]
+  bank_bins: ["62", "4", "51-55", "2221-2720", "34", "37", "35"]   # BIN prefix AND Luhn required
+  fields:
+    user.name: hash
+    src_endpoint.ip: keep
+  # Labels, not legal determinations (GB/T 43697 depends on scale and use).
+  levels:
+    pii.id_card: general
+    pii.bank_card: general
+    pii.phone: general
+    pii.email: general
+    "combo:id_card+bank_card": important
+
 destinations:
   - name: archive
     type: file             # not idempotent: exposes the raw duplicate rate
@@ -56,6 +75,7 @@ destinations:
     config: { path: ./out/archive.jsonl }
   - name: siem
     type: sqlite           # idempotent: INSERT ... ON CONFLICT(idem_key) DO NOTHING
+    max_level: important   # events labelled above this are not delivered here
     breaker: { failures: 5, open_for: 10s }
     config: { path: ./out/siem.db }
   # - name: soar
@@ -63,8 +83,9 @@ destinations:
   #   breaker: { failures: 5, open_for: 10s }
   #   config: { url: "http://127.0.0.1:9100/ingest", timeout: 2s, batch: true }
 
-# First matching route wins; match = top-level field equality on the
-# ingested JSON object. Naming an unconfigured destination reserves its ID
+# First matching route wins; match = equality on a top-level OCSF field
+# (class_uid, activity_id, ...) or else a top-level key of the ingested
+# JSON object (fields.unmapped). Naming an unconfigured destination reserves its ID
 # and parks its events until it is configured or orphan_ttl expires.
 routes:
   - { match: { class_uid: 3002 }, to: [archive, siem] }

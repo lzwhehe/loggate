@@ -39,6 +39,14 @@ gateway:
   wal: { segment_bytes: 64MiB, fsync_interval: 10ms, fsync_max_events: 512 }
   retry: { base: 200ms, max: 30s, max_attempts: 20, max_age: 24h }
   l1: { checkpoint_interval: 1s, sweep_interval: 1s, gc_interval: 10s }
+  # Masking stays on (as in production), but the harness fields that
+  # reconcile and mocksink read are policy "keep" (DESIGN §0.5 item 11):
+  # masking them would break the oracle, not protect anything.
+  masking:
+    fields:
+      unmapped.run_id: keep
+      unmapped.test_seq: keep
+      unmapped.scheduled_send_ns: keep
 
 # Common pass criteria. Scenarios add theirs under extra_checks.
 checks:

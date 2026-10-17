@@ -1,4 +1,4 @@
-# 实现说明（M2、M3）
+# 实现说明（M2、M3、M4）
 
 本文记录 M2、M3 实现与 `DESIGN.md`（含 §0.5 v0.2 修订）的偏差、补充的细节和原因，以及已知缺口。没有列出的部分按设计实现。
 
@@ -65,7 +65,7 @@
 6. `/v1/stats` 里的 DLQ 计数只统计本进程写入的条目。
 7. redeliver 读不到 WAL 记录时（理论上不应发生，segRef 会钉住段）会按 `retry.max` 推迟，最终由 sweeper 在 `max_age` 时转 DLQ（body 记为 null）。
 8. 只在 Windows 上跑过；race detector 未运行（见 §2）。
-9. 脱敏和 OCSF 未做（M4）：WAL、L1 引用的记录、DLQ 都保存未脱敏的事件。日志里不输出事件内容，只输出 seq、段号等定位信息。
+9. ~~脱敏和 OCSF 未做~~（M4 已做，见 §10–§12）：脱敏在 WAL append 之前完成，WAL、L1 引用的记录、DLQ 只保存脱敏后的事件。日志里不输出事件内容，只输出 seq、段号等定位信息。
 
 # M3：故障注入基准（faultbench）
 
@@ -133,3 +133,55 @@
 4. file/sqlite 的到达时间分辨率是 observer 的 50ms 轮询；webhook（soar、probe）的到达时间是 mocksink 判定结果的时刻（slow 模式下在延迟之后）。
 5. Vector / Fluent Bit 对照（§10.4）、soak、性能矩阵（§11）未做。
 6. race detector 仍未在本机运行（无 gcc）。
+
+# M4：OCSF 归一化、脱敏、分级路由、合成评测
+
+## 10. 组成与数据流
+
+ingest（HTTP JSON 或 `text/plain` 按行）→ `normalize.JSON / normalize.Text`（OCSF 子集 map）→ `mask.Engine.MaskEvent`（就地改写，返回 DataClass / DataLevel）→ `route.Table.Route`（规则匹配 + max_level 过滤）→ WAL append。四步都在请求 goroutine 的内存里完成，WAL 编码器只序列化脱敏后的 `LogEvent`。
+
+| 组件 | 位置 | 说明 |
+|---|---|---|
+| 归一化 | `internal/normalize` | 3002（sshd 正则、JSON `event.type=auth`）和 Base Event 0；golden 文件在 `testdata/golden`，schema 在 `testdata/ocsf_subset.schema.json` |
+| 检测器 | `internal/mask/detect.go` | 数字串扫描（分组卡号 + 纯数字串）、校验函数、e-mail RE2、区间冲突消解 |
+| 引擎 | `internal/mask/engine.go` | 策略 trie、树遍历、掩码改写、HMAC、fail-closed、分级 |
+| 评测 | `internal/piibench`、`cmd/piigen`、`cmd/piieval` | 生成器、span 级评测、残留检查、markdown/JSON 报告 |
+
+## 11. 与设计的偏差和补充
+
+| # | 设计 / 任务 | 实现 | 原因 |
+|---|---|---|---|
+| 1 | §6 metadata.uid | 未填；idem_key 在 LogEvent 顶层 | idem key 在 WAL writer 里才分配，在那里改 map 没必要 |
+| 2 | §6 JSON 事件的 raw_data | JSON 输入不保留 raw_data，整个对象在 unmapped（3002 时去掉已映射的键）；文本行的 raw_data = 原行 | 避免同一内容存两份、扫两遍；`LogEvent.Raw` 不再填充（以前存的是未脱敏原文） |
+| 3 | §6 time | 3002 的 JSON 事件解析 `@timestamp / timestamp / time`（RFC 3339 或毫秒）；sshd 和 Base Event 用接收时间 | syslog 时间戳没有年份；Base Event 的 unmapped 保持原样 |
+| 4 | "Connection closed by" | 带 `[preauth]` → Logon 失败（status_detail 说明）；不带 → Logoff 成功；另支持 `Disconnected from` | preauth 断开本质上是一次没完成的登录尝试 |
+| 5 | auth_protocol | 字符串取方法名（`ssh2/password`、`publickey`），`auth_protocol_id = 99 (Other)` | OCSF 的枚举里没有 SSH 方法 |
+| 6 | 策略 trie | 显式 drop/hash 作用于整个子树；从祖先继承来的 drop/hash 遇到"下面还配置了策略"的节点时改为逐叶应用（否则 `default: drop` + `unmapped.x: scan` 会把整个 unmapped 丢掉）；keep 节点下面有配置时继续向下走 | 让"默认丢弃、白名单保留/扫描"可用 |
+| 7 | 内置 keep | `class_uid、class_name、category_*、activity_*、type_*、status_id、severity_id、time、metadata` 默认 keep，可被配置覆盖 | 网关自己生成的字段，不含输入内容 |
+| 8 | 扫描范围 | 字符串和 `json.Number` 都扫；命中的数字值改写成字符串。bool / 网关生成的 int 不扫 | JSON 数字里也可能是身份证、卡号 |
+| 9 | URL 转义 | `%XX` 结尾视为左边界；`%20` 这类全数字转义会和后面的数字连成一串，扫描时跳过前两位 | nginx 访问日志里常见；否则严格边界会全部漏掉 |
+| 10 | 掩码收敛 | 掩码后再检测一遍，最多 4 轮，仍有命中则整值 `[REDACTED:error]` | 第一张卡掩码保留后 4 位，可能和后面的组构成新的合法卡号窗口（`TestMaskRescanConverges`）；fuzz 的性质依赖这一点 |
+| 11 | 手机号 span | span 只含 11 位本号，`+86 / 86` 是上下文 | 精确匹配评测里对基线公平 |
+| 12 | 卡号长度 | 严格 16–19 位（Amex 15 位不识别，BIN 34/37 只对 16+ 位生效） | 任务规定 16–19 |
+| 13 | 出生日期上界 | "今天"在引擎创建时确定（可注入），进程长时间运行时上界不更新 | 差一天的边界影响可以忽略；测试和评测可复现 |
+| 14 | HMAC 密钥 | `masking.hmac_key_env`（默认 `LOGGATE_HMAC_KEY`，≥ 16 字节）；未设置时随机生成，配置了 hash 策略时告警 | 与 idem key 的处理一致 |
+| 15 | max_level | `route.Table` 里每目的地一个原子上限 + 计数；运行时 register 时同步更新 | Route 在 ingest 时执行一次，结果写入 WAL 的 targets；重放、重投不再重新判断 |
+| 16 | 400 错误 | 只返回 `event N: invalid JSON at offset K` 这类信息 | encoding/json 的错误串会引用输入字节 |
+| 17 | 文本输入 | `Content-Type: text/plain` 走按行切分；syslog TCP 没做 | 任务里 syslog TCP 为可选；HTTP 已覆盖 |
+| 18 | `masking.disabled` | 新增，仅供基准对照 | 关闭时启动日志告警 WAL 中是原文 |
+| 19 | file sink 行格式 | 增加 `data_class`、`data_level` | 便于在归档里核对标签 |
+
+## 12. 评测方法与已知缺口（M4）
+
+**评测方法**：`piigen` 用固定 seed（PCG）生成记录，每条记录带正样本 span（类型、表层变体、是否已知局限）和困难负样本 span（类型）。`piieval` 对 LogGate 检测器、`regex_naive`、`regex_bounded` 做 span 级精确匹配；误报按重叠的负样本类型或"落在另一种 PII 里"归因，漏报按表层变体统计；已知局限（全角数字、`%40`、紧贴字母）单列、不计分，落在上面的预测也不算误报。另外用 `MaskString`（整行）和 `MaskEvent`（app_json 记录解码后整棵树）检查正样本原文是否残留。报告记录数据集 sha256。
+
+**本次结果**（`bench/results/20261018-002220-pii/`）：LogGate micro P/R/F1 = 0.9950 / 1.0000 / 0.9975，误报 83（全部是银行卡：像身份证但校验失败的 18 位数字落在 BIN 里，以及随机数字 ID 碰巧通过 BIN + Luhn）；naive 0.4334 / 0.8696 / 0.5785；bounded 0.6348 / 0.8536 / 0.7281。残留 0。吞吐见 README 和 `bench.txt`。脱敏开启后重跑 quick S0、S1：全部目的地 lost = 0（`bench/results/20261018-m4-windows-quick-S0S1/`）。
+
+**已知缺口**：
+1. 召回 1.0 主要验证实现：生成器与检测器共享格式假设；没有真实日志样本（也不应该用真实 PII）。
+2. 18 位、像身份证但校验失败的数字会被当成卡号（省码与 BIN 重叠）；没有为此加启发式，避免对自己生成的数据调参。
+3. 不识别：姓名、地址、15 位老身份证、全角数字、`%40` 邮箱、紧贴 ASCII 字母的号码、空格分隔的手机号（`138 1234 5678`）、IPv4（设计里是可选项）。
+4. 分级只到单事件；"重要/核心"取决于数据规模和用途，这里只是可配置标签。
+5. 泄露面：panic 栈、core dump、swap 不在进程控制范围内；`masking.disabled` 时 WAL 存原文。
+6. 吞吐数字来自 Windows 笔记本的单 goroutine 基准，未做 CPU 隔离；端到端（含 WAL fsync）的"脱敏开/关"对照在 M6 的性能矩阵里做。
+7. syslog TCP 输入未实现。

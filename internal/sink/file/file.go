@@ -26,6 +26,8 @@ type Line struct {
 	SourceID   string         `json:"source_id"`
 	ReceivedAt int64          `json:"received_at"`
 	Fields     map[string]any `json:"fields,omitempty"`
+	DataClass  []string       `json:"data_class,omitempty"`
+	DataLevel  event.Level    `json:"data_level,omitempty"`
 }
 
 // Sink appends one JSON line per event and flushes once per batch. Flush
@@ -101,7 +103,7 @@ func (s *Sink) Write(ctx context.Context, batch []*sink.Envelope) []error {
 	var buf []byte
 	for i, env := range batch {
 		ev := env.Event
-		b, err := json.Marshal(Line{Seq: ev.Seq, IdemKey: ev.IdemKey, SourceID: ev.SourceID, ReceivedAt: ev.ReceivedAt, Fields: ev.Fields})
+		b, err := json.Marshal(Line{Seq: ev.Seq, IdemKey: ev.IdemKey, SourceID: ev.SourceID, ReceivedAt: ev.ReceivedAt, Fields: ev.Fields, DataClass: ev.DataClass, DataLevel: ev.DataLevel})
 		if err != nil {
 			errs[i] = fmt.Errorf("file sink: marshal seq %d: %w", ev.Seq, err)
 			continue

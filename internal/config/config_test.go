@@ -170,3 +170,37 @@ routes:
 		t.Fatalf("absent = %v", abs)
 	}
 }
+
+func TestMaskingConfig(t *testing.T) {
+	good := validYAML + `
+masking:
+  default: drop
+  detectors: [id_card, phone]
+  bank_bins: ["62"]
+  fields: { unmapped.test_seq: keep, user.name: hash }
+  levels: { pii.phone: core, "combo:id_card+phone": important }
+`
+	c, err := Parse([]byte(strings.Replace(good, "config: { path: ./out/archive.jsonl } }", "max_level: important, config: { path: ./out/archive.jsonl } }", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Masking.HMACKeyEnv != DefaultHMACKeyEnv || c.Destinations[0].MaxLevel != "important" {
+		t.Fatalf("masking %+v dest %+v", c.Masking, c.Destinations[0])
+	}
+	if _, err := c.Masking.EngineConfig(); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		"masking: { default: redact }",
+		"masking: { fields: { a: shred } }",
+		"masking: { detectors: [name] }",
+		"masking: { levels: { pii.phone: secret } }",
+	} {
+		if _, err := Parse([]byte(validYAML + bad)); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	if _, err := Parse([]byte(strings.Replace(validYAML, "config: { path: ./out/archive.jsonl } }", "max_level: top, config: { path: ./out/archive.jsonl } }", 1))); err == nil {
+		t.Error("accepted max_level: top")
+	}
+}

@@ -34,6 +34,22 @@ func (l Level) String() string {
 	}
 }
 
+// ParseLevel parses a level name: general|important|core (also 一般, 重要,
+// 核心) or unset/none/"".
+func ParseLevel(s string) (Level, error) {
+	switch s {
+	case "", "unset", "none":
+		return LevelUnset, nil
+	case "general", "一般":
+		return LevelGeneral, nil
+	case "important", "重要":
+		return LevelImportant, nil
+	case "core", "核心":
+		return LevelCore, nil
+	}
+	return LevelUnset, fmt.Errorf("unknown data level %q (want general|important|core)", s)
+}
+
 // MaxDests is the number of destinations a DestMask can address.
 const MaxDests = 64
 

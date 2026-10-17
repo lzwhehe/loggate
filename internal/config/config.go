@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/lzwhehe/loggate/internal/event"
+	"github.com/lzwhehe/loggate/internal/mask"
 )
 
 // Config is the root configuration.
@@ -28,6 +29,7 @@ type Config struct {
 	L1           L1            `yaml:"l1"`
 	Disk         Disk          `yaml:"disk"`
 	Admin        Admin         `yaml:"admin"`
+	Masking      Masking       `yaml:"masking"`
 	Destinations []Destination `yaml:"destinations"`
 	Routes       []Route       `yaml:"routes"`
 }
@@ -140,6 +142,75 @@ func (a Admin) Resolve() (string, error) {
 	return a.Token, nil
 }
 
+// Masking configures the PII masking engine (DESIGN §7, §0.5 item 11).
+// Masking runs before the WAL append, so unmasked PII is never written to
+// the WAL, L1 or the DLQ.
+type Masking struct {
+	// Disabled turns masking off (benchmarks only; the WAL then holds raw
+	// input).
+	Disabled bool `yaml:"disabled"`
+	// HMACKeyEnv names the environment variable holding the key of the
+	// "hash" policy (>= 16 bytes). Unset: a random per-process key (hashes
+	// are then not stable across restarts).
+	HMACKeyEnv string `yaml:"hmac_key_env"`
+	// Default is the policy of fields without one: scan (default) | drop |
+	// keep | hash | mask.
+	Default string `yaml:"default"`
+	// Detectors enabled (default all): id_card, bank_card, phone, email.
+	Detectors []string `yaml:"detectors"`
+	// BankBINs is the bank card issuer prefix allowlist ("62", "51-55").
+	// A card must match a prefix and pass Luhn. Default: mask.DefaultBINs.
+	BankBINs []string `yaml:"bank_bins"`
+	// Fields maps dotted OCSF paths ("user.name", "unmapped.*.token") to
+	// keep|drop|hash|mask|scan.
+	Fields map[string]string `yaml:"fields"`
+	// Levels maps "pii.<kind>" or "combo:<kind>+<kind>" to
+	// general|important|core|none, overriding the defaults (any PII →
+	// general; id_card+bank_card → important).
+	Levels map[string]string `yaml:"levels"`
+}
+
+// EngineConfig converts the YAML form to a mask.Config (without the key).
+func (m Masking) EngineConfig() (mask.Config, error) {
+	var c mask.Config
+	var errs []error
+	var err error
+	if c.Default, err = mask.ParsePolicy(m.Default); err != nil {
+		errs = append(errs, fmt.Errorf("masking.default: %w", err))
+	}
+	if m.Detectors != nil {
+		c.Detector.Kinds = []mask.Kind{}
+		for _, d := range m.Detectors {
+			k, err := mask.ParseKind(d)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("masking.detectors: %w", err))
+				continue
+			}
+			c.Detector.Kinds = append(c.Detector.Kinds, k)
+		}
+	}
+	c.Detector.BINs = m.BankBINs
+	c.Fields = map[string]mask.Policy{}
+	for path, p := range m.Fields {
+		pol, err := mask.ParsePolicy(p)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("masking.fields.%s: %w", path, err))
+			continue
+		}
+		c.Fields[path] = pol
+	}
+	c.Levels = map[string]event.Level{}
+	for k, v := range m.Levels {
+		l, err := event.ParseLevel(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("masking.levels.%s: %w", k, err))
+			continue
+		}
+		c.Levels[k] = l
+	}
+	return c, errors.Join(errs...)
+}
+
 // Queue bounds a destination's L2 queue and its batching.
 type Queue struct {
 	MaxEvents int           `yaml:"max_events"` // default 10000
@@ -156,11 +227,15 @@ type Breaker struct {
 
 // Destination is one output.
 type Destination struct {
-	Name    string         `yaml:"name"`
-	Type    string         `yaml:"type"`
-	Queue   Queue          `yaml:"queue"`
-	Breaker Breaker        `yaml:"breaker"`
-	Config  map[string]any `yaml:"config"`
+	Name    string  `yaml:"name"`
+	Type    string  `yaml:"type"`
+	Queue   Queue   `yaml:"queue"`
+	Breaker Breaker `yaml:"breaker"`
+	// MaxLevel, if set (general|important|core), keeps events whose
+	// DataLevel is above it away from this destination (counted as
+	// route_level_blocked).
+	MaxLevel string         `yaml:"max_level"`
+	Config   map[string]any `yaml:"config"`
 }
 
 // Route maps matching events to destinations. Match is a set of top-level
@@ -183,6 +258,8 @@ const (
 	DefaultHTTPListen     = ":8080"
 	DefaultMaxBody        = 1 << 20
 	DefaultIdemKeyEnv     = "LOGGATE_IDEM_KEY"
+	DefaultHMACKeyEnv     = "LOGGATE_HMAC_KEY"
+	DefaultMaskPolicy     = "scan"
 
 	DefaultRetryBase          = 200 * time.Millisecond
 	DefaultRetryMax           = 30 * time.Second
@@ -294,6 +371,12 @@ func (c *Config) ApplyDefaults() {
 		l.OnQuota = DefaultOnQuota
 	}
 	setDur(&c.Disk.CheckInterval, DefaultDiskCheckInterval)
+	if c.Masking.HMACKeyEnv == "" {
+		c.Masking.HMACKeyEnv = DefaultHMACKeyEnv
+	}
+	if c.Masking.Default == "" {
+		c.Masking.Default = DefaultMaskPolicy
+	}
 	for i := range c.Destinations {
 		c.Destinations[i].ApplyDefaults()
 	}
@@ -370,6 +453,9 @@ func ValidateDestination(d Destination, knownType func(string) bool) error {
 	if d.Breaker.Failures < 1 || d.Breaker.OpenFor <= 0 {
 		add("%s: breaker.failures and breaker.open_for must be positive", d.Name)
 	}
+	if _, err := event.ParseLevel(d.MaxLevel); err != nil {
+		add("%s: max_level: %w", d.Name, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -433,6 +519,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Admin.Token != "" && len(c.Admin.Token) < 16 {
 		add("admin.token must be at least 16 bytes")
+	}
+
+	if _, err := c.Masking.EngineConfig(); err != nil {
+		errs = append(errs, err)
 	}
 
 	names := map[string]bool{}

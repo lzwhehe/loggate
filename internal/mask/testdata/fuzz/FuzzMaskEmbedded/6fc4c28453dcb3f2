@@ -1,0 +1,7 @@
+go test fuzz v1
+string("0 &&\x83&\x94\xd0\xf4}a\xc3 A\x84\x8f\xe6a\x97A\xbc]\xdd")
+string(" ^\xa1")
+string("@")
+uint64(5)
+byte('\x15')
+byte('G')

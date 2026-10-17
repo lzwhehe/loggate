@@ -1,0 +1,1 @@
+Oct 17 10:00:04 bastion sshd[2214]: Connection closed by authenticating user root 203.0.113.5 port 3334 [preauth]

@@ -1,0 +1,62 @@
+# masking benchmarks (go test -bench, -count 3, benchtime 1s)
+# commit base: 440d257 + M4 working tree; date: 2026-10-18T00:22:35+09:00
+# machine: AMD Ryzen 9 5900HX (8C/16T), 31.9 GB RAM, Windows 11 Home China (10.0.26200), go1.27.0 windows/amd64; no CPU pinning or isolation (desktop session)
+# MB/s counts only the scanned string bytes of unmapped (not OCSF metadata); pii=N%(k/n) = k of n 32-byte fields carry one PII value.
+# MaskEvent pii>0 cases include restoring the k masked fields before each op.
+goos: windows
+goarch: amd64
+pkg: github.com/lzwhehe/loggate/internal/mask
+cpu: AMD Ryzen 9 5900HX with Radeon Graphics        
+BenchmarkMaskEvent/size=200/pii=0%(0/6)-16         	 1524462	       788.1 ns/op	 243.62 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskEvent/size=200/pii=0%(0/6)-16         	 1531078	       784.5 ns/op	 244.76 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskEvent/size=200/pii=0%(0/6)-16         	 1536712	       782.9 ns/op	 245.25 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskEvent/size=200/pii=10%(1/6)-16        	 1000000	      1082 ns/op	 177.50 MB/s	      64 B/op	       2 allocs/op
+BenchmarkMaskEvent/size=200/pii=10%(1/6)-16        	 1000000	      1088 ns/op	 176.44 MB/s	      64 B/op	       2 allocs/op
+BenchmarkMaskEvent/size=200/pii=10%(1/6)-16        	 1000000	      1082 ns/op	 177.45 MB/s	      64 B/op	       2 allocs/op
+BenchmarkMaskEvent/size=200/pii=50%(3/6)-16        	  910062	      1365 ns/op	 140.70 MB/s	     192 B/op	       6 allocs/op
+BenchmarkMaskEvent/size=200/pii=50%(3/6)-16        	  888262	      1363 ns/op	 140.89 MB/s	     192 B/op	       6 allocs/op
+BenchmarkMaskEvent/size=200/pii=50%(3/6)-16        	  887356	      1369 ns/op	 140.27 MB/s	     192 B/op	       6 allocs/op
+BenchmarkMaskEvent/size=1024/pii=0%(0/32)-16       	  427282	      2872 ns/op	 356.56 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskEvent/size=1024/pii=0%(0/32)-16       	  420490	      2869 ns/op	 356.95 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskEvent/size=1024/pii=0%(0/32)-16       	  424174	      2874 ns/op	 356.26 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskEvent/size=1024/pii=10%(3/32)-16      	  281818	      4214 ns/op	 243.02 MB/s	     192 B/op	       6 allocs/op
+BenchmarkMaskEvent/size=1024/pii=10%(3/32)-16      	  284154	      4228 ns/op	 242.19 MB/s	     192 B/op	       6 allocs/op
+BenchmarkMaskEvent/size=1024/pii=10%(3/32)-16      	  284793	      4229 ns/op	 242.16 MB/s	     192 B/op	       6 allocs/op
+BenchmarkMaskEvent/size=1024/pii=50%(16/32)-16     	  104259	     11479 ns/op	  89.21 MB/s	    1256 B/op	      44 allocs/op
+BenchmarkMaskEvent/size=1024/pii=50%(16/32)-16     	  104743	     11537 ns/op	  88.76 MB/s	    1260 B/op	      44 allocs/op
+BenchmarkMaskEvent/size=1024/pii=50%(16/32)-16     	  102682	     11580 ns/op	  88.43 MB/s	    1258 B/op	      44 allocs/op
+BenchmarkMaskEvent/size=4096/pii=0%(0/128)-16      	  113368	     10492 ns/op	 390.39 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskEvent/size=4096/pii=0%(0/128)-16      	  115688	     10411 ns/op	 393.45 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskEvent/size=4096/pii=0%(0/128)-16      	  114457	     10440 ns/op	 392.33 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskEvent/size=4096/pii=10%(13/128)-16    	   59581	     20227 ns/op	 202.50 MB/s	    1011 B/op	      35 allocs/op
+BenchmarkMaskEvent/size=4096/pii=10%(13/128)-16    	   59940	     20050 ns/op	 204.29 MB/s	    1010 B/op	      35 allocs/op
+BenchmarkMaskEvent/size=4096/pii=10%(13/128)-16    	   59635	     20073 ns/op	 204.06 MB/s	    1013 B/op	      35 allocs/op
+BenchmarkMaskEvent/size=4096/pii=50%(64/128)-16    	   26595	     45070 ns/op	  90.88 MB/s	    5028 B/op	     176 allocs/op
+BenchmarkMaskEvent/size=4096/pii=50%(64/128)-16    	   26199	     46169 ns/op	  88.72 MB/s	    5036 B/op	     176 allocs/op
+BenchmarkMaskEvent/size=4096/pii=50%(64/128)-16    	   25909	     45760 ns/op	  89.51 MB/s	    5039 B/op	     176 allocs/op
+BenchmarkMaskString/size=200/pii=false-16          	 3381316	       355.0 ns/op	 563.31 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskString/size=200/pii=false-16          	 3348520	       357.2 ns/op	 559.86 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskString/size=200/pii=false-16          	 3351913	       357.0 ns/op	 560.19 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskString/size=200/pii=true-16           	 1374063	       879.5 ns/op	 226.27 MB/s	     208 B/op	       1 allocs/op
+BenchmarkMaskString/size=200/pii=true-16           	 1378992	       869.5 ns/op	 228.88 MB/s	     208 B/op	       1 allocs/op
+BenchmarkMaskString/size=200/pii=true-16           	 1374754	       872.4 ns/op	 228.10 MB/s	     208 B/op	       1 allocs/op
+BenchmarkMaskString/size=1024/pii=false-16         	  686635	      1748 ns/op	 585.74 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskString/size=1024/pii=false-16         	  668481	      1755 ns/op	 583.58 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskString/size=1024/pii=false-16         	  678628	      1753 ns/op	 584.14 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskString/size=1024/pii=true-16          	  308328	      3785 ns/op	 270.29 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkMaskString/size=1024/pii=true-16          	  314266	      3758 ns/op	 272.19 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkMaskString/size=1024/pii=true-16          	  317920	      3747 ns/op	 273.00 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkMaskString/size=4096/pii=false-16         	  170568	      7009 ns/op	 584.37 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskString/size=4096/pii=false-16         	  170948	      7015 ns/op	 583.91 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskString/size=4096/pii=false-16         	  173004	      6996 ns/op	 585.47 MB/s	       0 B/op	       0 allocs/op
+BenchmarkMaskString/size=4096/pii=true-16          	   79576	     15220 ns/op	 269.05 MB/s	    4864 B/op	       1 allocs/op
+BenchmarkMaskString/size=4096/pii=true-16          	   78559	     15292 ns/op	 267.78 MB/s	    4864 B/op	       1 allocs/op
+BenchmarkMaskString/size=4096/pii=true-16          	   78992	     15229 ns/op	 268.90 MB/s	    4864 B/op	       1 allocs/op
+BenchmarkPipeline1KB/mask=false-16                 	   49980	     25643 ns/op	  52.45 MB/s	   15356 B/op	     145 allocs/op
+BenchmarkPipeline1KB/mask=false-16                 	   50708	     25755 ns/op	  52.22 MB/s	   15357 B/op	     145 allocs/op
+BenchmarkPipeline1KB/mask=false-16                 	   44922	     25403 ns/op	  52.95 MB/s	   15354 B/op	     145 allocs/op
+BenchmarkPipeline1KB/mask=true-16                  	   40854	     29259 ns/op	  45.97 MB/s	   15548 B/op	     151 allocs/op
+BenchmarkPipeline1KB/mask=true-16                  	   41228	     30234 ns/op	  44.49 MB/s	   15552 B/op	     151 allocs/op
+BenchmarkPipeline1KB/mask=true-16                  	   41674	     31195 ns/op	  43.12 MB/s	   15550 B/op	     151 allocs/op
+PASS
+ok  	github.com/lzwhehe/loggate/internal/mask	61.245s

@@ -1,0 +1,620 @@
+{
+  "dataset": "pii.jsonl",
+  "dataset_sha256": "c20aa3fce0ddca764a0b19f0023ac01f3484b124c6977666080c93aa8fdf8557",
+  "today": "2026-10-17",
+  "go_version": "go1.27.0",
+  "stats": {
+    "records": 10000,
+    "bytes": 2176945,
+    "templates": {
+      "app_json": 2522,
+      "nginx": 2475,
+      "sshd": 2443,
+      "ticket": 2560
+    },
+    "positives": {
+      "bank_card": 3691,
+      "email": 3417,
+      "id_card": 3046,
+      "phone": 6393
+    },
+    "limitations": {
+      "adjacent_alnum": 107,
+      "fullwidth_digits": 263,
+      "urlencoded_at": 418
+    },
+    "negatives": {
+      "card_luhn_fail": 682,
+      "id_bad_checksum": 687,
+      "id_bad_date": 738,
+      "id_bad_province": 669,
+      "key_fingerprint": 601,
+      "ms_timestamp": 4057,
+      "order_id": 6584,
+      "phone_bad_prefix": 717,
+      "random_numeric_id": 678,
+      "snowflake_luhn_pass_no_bin": 3272,
+      "trace_id": 6487,
+      "version": 5771
+    }
+  },
+  "systems": [
+    {
+      "name": "loggate",
+      "per_type": {
+        "bank_card": {
+          "tp": 3691,
+          "fp": 83,
+          "fn": 0,
+          "precision": 0.9780074191838898,
+          "recall": 1,
+          "f1": 0.9888814467515071
+        },
+        "email": {
+          "tp": 3417,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        },
+        "id_card": {
+          "tp": 3046,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        },
+        "phone": {
+          "tp": 6393,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        }
+      },
+      "micro": {
+        "tp": 16547,
+        "fp": 83,
+        "fn": 0,
+        "precision": 0.9950090198436561,
+        "recall": 1,
+        "f1": 0.9974982668716279
+      },
+      "fp_causes": {
+        "bank_card": {
+          "id_bad_checksum": 26,
+          "id_bad_date": 28,
+          "id_bad_province": 17,
+          "random_numeric_id": 12
+        },
+        "email": {},
+        "id_card": {},
+        "phone": {}
+      },
+      "fn_variants": {
+        "bank_card": {},
+        "email": {},
+        "id_card": {},
+        "phone": {}
+      },
+      "limitations": {
+        "adjacent_alnum": {
+          "total": 107,
+          "detected": 0
+        },
+        "fullwidth_digits": {
+          "total": 263,
+          "detected": 0
+        },
+        "urlencoded_at": {
+          "total": 418,
+          "detected": 0
+        }
+      },
+      "fp_samples": [
+        {
+          "record": 289,
+          "type": "bank_card",
+          "value": "531125190002299710",
+          "cause": "id_bad_date",
+          "context": "l.example.com\",\"id_no\":\"⟦531125190002299710⟧\"},\"card\":\"6270-0510-703"
+        },
+        {
+          "record": 491,
+          "type": "bank_card",
+          "value": "471507196010084488",
+          "cause": "id_bad_province",
+          "context": " 7634 9099 2186\",\"ref\":\"⟦471507196010084488⟧\",\"msg\":\"verify ok\",\"ver"
+        },
+        {
+          "record": 657,
+          "type": "bank_card",
+          "value": "430605199212326340",
+          "cause": "id_bad_date",
+          "context": "28eb9dacf3e78276c0e\u0026uid=⟦430605199212326340⟧ HTTP/1.1\" 200 452 \"-\" \""
+        },
+        {
+          "record": 691,
+          "type": "bank_card",
+          "value": "621820198704318271",
+          "cause": "id_bad_date",
+          "context": "版本 v2.20.112, device ⟦621820198704318271⟧."
+        },
+        {
+          "record": 881,
+          "type": "bank_card",
+          "value": "532030198800007922",
+          "cause": "id_bad_date",
+          "context": "版本 v1.12.99, device ⟦532030198800007922⟧."
+        },
+        {
+          "record": 1041,
+          "type": "bank_card",
+          "value": "230723203001019164",
+          "cause": "id_bad_date",
+          "context": "018195905128467\",\"ref\":\"⟦230723203001019164⟧\",\"msg\":\"verify ok\",\"ver"
+        },
+        {
+          "record": 1339,
+          "type": "bank_card",
+          "value": "232012199305219847",
+          "cause": "id_bad_checksum",
+          "context": "本 v2.4.125，设备号 ⟦232012199305219847⟧。"
+        },
+        {
+          "record": 1395,
+          "type": "bank_card",
+          "value": "495986943581802023",
+          "cause": "random_numeric_id",
+          "context": "00c9f2b97b95aa4da56\u0026uid=⟦495986943581802023⟧ HTTP/1.1\" 404 13747 \"-\""
+        }
+      ],
+      "fn_samples": null
+    },
+    {
+      "name": "regex_naive",
+      "per_type": {
+        "bank_card": {
+          "tp": 1748,
+          "fp": 3063,
+          "fn": 1943,
+          "precision": 0.3633340261899813,
+          "recall": 0.4735843944730425,
+          "f1": 0.4111973653258057
+        },
+        "email": {
+          "tp": 3417,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        },
+        "id_card": {
+          "tp": 2831,
+          "fp": 11234,
+          "fn": 215,
+          "precision": 0.20127977248489157,
+          "recall": 0.9294156270518713,
+          "f1": 0.33089825258605576
+        },
+        "phone": {
+          "tp": 6393,
+          "fp": 4512,
+          "fn": 0,
+          "precision": 0.5862448418156809,
+          "recall": 1,
+          "f1": 0.7391605966007632
+        }
+      },
+      "micro": {
+        "tp": 14389,
+        "fp": 18809,
+        "fn": 2158,
+        "precision": 0.43342972468220975,
+        "recall": 0.8695836103221127,
+        "f1": 0.5785104030555834
+      },
+      "fp_causes": {
+        "bank_card": {
+          "card_luhn_fail": 472,
+          "key_fingerprint": 2,
+          "order_id": 2234,
+          "random_numeric_id": 336,
+          "trace_id": 19
+        },
+        "email": {},
+        "id_card": {
+          "boundary_mismatch": 215,
+          "card_luhn_fail": 210,
+          "id_bad_checksum": 687,
+          "id_bad_date": 738,
+          "id_bad_province": 669,
+          "inside_bank_card": 747,
+          "key_fingerprint": 1,
+          "order_id": 4350,
+          "random_numeric_id": 342,
+          "snowflake_luhn_pass_no_bin": 3272,
+          "trace_id": 3
+        },
+        "phone": {
+          "key_fingerprint": 7,
+          "ms_timestamp": 4057,
+          "phone_bad_prefix": 403,
+          "trace_id": 45
+        }
+      },
+      "fn_variants": {
+        "bank_card": {
+          "grouped_hyphen": 278,
+          "grouped_space": 918,
+          "plain": 747
+        },
+        "email": {},
+        "id_card": {
+          "url_escaped": 215
+        },
+        "phone": {}
+      },
+      "limitations": {
+        "adjacent_alnum": {
+          "total": 107,
+          "detected": 107
+        },
+        "fullwidth_digits": {
+          "total": 263,
+          "detected": 0
+        },
+        "urlencoded_at": {
+          "total": 418,
+          "detected": 0
+        }
+      },
+      "fp_samples": [
+        {
+          "record": 2,
+          "type": "bank_card",
+          "value": "6215420242276265",
+          "cause": "order_id",
+          "context": "00] \"GET /api/orders/ORD⟦6215420242276265⟧?trace=3b71f45afce2af9d2"
+        },
+        {
+          "record": 2,
+          "type": "bank_card",
+          "value": "84718634142077616",
+          "cause": "random_numeric_id",
+          "context": "f9d25b9590efa5d0716\u0026uid=⟦84718634142077616⟧ HTTP/1.1\" 200 6950 \"-\" "
+        },
+        {
+          "record": 6,
+          "type": "phone",
+          "value": "17170973505",
+          "cause": "ms_timestamp",
+          "context": "{\"ts\":⟦17170973505⟧35,\"level\":\"WARN\",\"svc\":"
+        },
+        {
+          "record": 6,
+          "type": "id_card",
+          "value": "202612123619526978",
+          "cause": "order_id",
+          "context": "784219a296\",\"order_id\":\"⟦202612123619526978⟧036\",\"snowflake\":9190639"
+        },
+        {
+          "record": 6,
+          "type": "id_card",
+          "value": "919063979865379084",
+          "cause": "snowflake_luhn_pass_no_bin",
+          "context": "9526978036\",\"snowflake\":⟦919063979865379084⟧8,\"user\":{\"mobile\":\"1491"
+        },
+        {
+          "record": 6,
+          "type": "bank_card",
+          "value": "9911967654330981",
+          "cause": "order_id",
+          "context": "rp.example\"},\"card\":\"ORD⟦9911967654330981⟧\",\"ref\":\"8461f405e692d78"
+        },
+        {
+          "record": 8,
+          "type": "bank_card",
+          "value": "3717985317002279",
+          "cause": "order_id",
+          "context": "工单#ORD⟦3717985317002279⟧：客户反馈无法登"
+        },
+        {
+          "record": 8,
+          "type": "phone",
+          "value": "16809622223",
+          "cause": "phone_bad_prefix",
+          "context": "本 v3.22.166，设备号 ⟦16809622223⟧."
+        }
+      ],
+      "fn_samples": [
+        {
+          "record": 9,
+          "type": "bank_card",
+          "value": "5311123416111770547",
+          "cause": "plain",
+          "context": "r cannot log in; 卡号:⟦5311123416111770547⟧。tel １８８５０７"
+        },
+        {
+          "record": 11,
+          "type": "bank_card",
+          "value": "6232 7596 1068 1155",
+          "cause": "grouped_space",
+          "context": "17489【投诉】卡号:⟦6232 7596 1068 1155⟧], tel 17705193040 App 版"
+        },
+        {
+          "record": 14,
+          "type": "bank_card",
+          "value": "6239 9727 7753 1997",
+          "cause": "grouped_space",
+          "context": "法登录，银行卡（⟦6239 9727 7753 1997⟧），tel 15214317030, m"
+        },
+        {
+          "record": 17,
+          "type": "bank_card",
+          "value": "6221 3908 3605 9159 591",
+          "cause": "grouped_space",
+          "context": "628199605276120，card [⟦6221 3908 3605 9159 591⟧。tel 19580633004，邮"
+        },
+        {
+          "record": 18,
+          "type": "bank_card",
+          "value": "2720683862078761366",
+          "cause": "plain",
+          "context": "not log in; 银行卡（⟦2720683862078761366⟧），手机19252461589 "
+        },
+        {
+          "record": 21,
+          "type": "id_card",
+          "value": "311113197211244551",
+          "cause": "url_escaped",
+          "context": "00] \"GET /search?q=id%20⟦311113197211244551⟧\u0026card=620764212875817557"
+        },
+        {
+          "record": 21,
+          "type": "bank_card",
+          "value": "6207642128758175572",
+          "cause": "plain",
+          "context": "311113197211244551\u0026card=⟦6207642128758175572⟧\u0026email=sun.jie%40dev.cor"
+        },
+        {
+          "record": 26,
+          "type": "bank_card",
+          "value": "6287 0106 0450 5206",
+          "cause": "grouped_space",
+          "context": "7197806268443\"},\"card\":\"⟦6287 0106 0450 5206⟧\",\"ref\":\"v3.5.159\",\"msg\""
+        }
+      ]
+    },
+    {
+      "name": "regex_bounded",
+      "per_type": {
+        "bank_card": {
+          "tp": 2495,
+          "fp": 4965,
+          "fn": 1196,
+          "precision": 0.3344504021447721,
+          "recall": 0.6759685722026552,
+          "f1": 0.44749349834095603
+        },
+        "email": {
+          "tp": 3417,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1,
+          "recall": 1,
+          "f1": 1
+        },
+        "id_card": {
+          "tp": 2438,
+          "fp": 2770,
+          "fn": 608,
+          "precision": 0.4681259600614439,
+          "recall": 0.8003939592908733,
+          "f1": 0.5907438817543009
+        },
+        "phone": {
+          "tp": 5774,
+          "fp": 392,
+          "fn": 619,
+          "precision": 0.9364255595199481,
+          "recall": 0.9031753480369153,
+          "f1": 0.9194999601879131
+        }
+      },
+      "micro": {
+        "tp": 14124,
+        "fp": 8127,
+        "fn": 2423,
+        "precision": 0.6347579884050155,
+        "recall": 0.8535686227110655,
+        "f1": 0.7280787669467499
+      },
+      "fp_causes": {
+        "bank_card": {
+          "card_luhn_fail": 666,
+          "order_id": 552,
+          "random_numeric_id": 498,
+          "snowflake_luhn_pass_no_bin": 3249
+        },
+        "email": {},
+        "id_card": {
+          "card_luhn_fail": 4,
+          "id_bad_checksum": 664,
+          "id_bad_date": 712,
+          "id_bad_province": 655,
+          "order_id": 572,
+          "random_numeric_id": 163
+        },
+        "phone": {
+          "phone_bad_prefix": 392
+        }
+      },
+      "fn_variants": {
+        "bank_card": {
+          "grouped_hyphen": 278,
+          "grouped_space": 918
+        },
+        "email": {},
+        "id_card": {
+          "url_escaped": 608
+        },
+        "phone": {
+          "plus86": 619
+        }
+      },
+      "limitations": {
+        "adjacent_alnum": {
+          "total": 107,
+          "detected": 0
+        },
+        "fullwidth_digits": {
+          "total": 263,
+          "detected": 0
+        },
+        "urlencoded_at": {
+          "total": 418,
+          "detected": 0
+        }
+      },
+      "fp_samples": [
+        {
+          "record": 2,
+          "type": "bank_card",
+          "value": "84718634142077616",
+          "cause": "random_numeric_id",
+          "context": "f9d25b9590efa5d0716\u0026uid=⟦84718634142077616⟧ HTTP/1.1\" 200 6950 \"-\" "
+        },
+        {
+          "record": 6,
+          "type": "bank_card",
+          "value": "9190639798653790848",
+          "cause": "snowflake_luhn_pass_no_bin",
+          "context": "9526978036\",\"snowflake\":⟦9190639798653790848⟧,\"user\":{\"mobile\":\"14911"
+        },
+        {
+          "record": 8,
+          "type": "phone",
+          "value": "16809622223",
+          "cause": "phone_bad_prefix",
+          "context": "本 v3.22.166，设备号 ⟦16809622223⟧."
+        },
+        {
+          "record": 9,
+          "type": "phone",
+          "value": "16884805711",
+          "cause": "phone_bad_prefix",
+          "context": "版本 v3.16.136, device ⟦16884805711⟧"
+        },
+        {
+          "record": 10,
+          "type": "phone",
+          "value": "16841648599",
+          "cause": "phone_bad_prefix",
+          "context": "版本 v4.25.138 设备ID=⟦16841648599⟧."
+        },
+        {
+          "record": 11,
+          "type": "bank_card",
+          "value": "2026042255452817489",
+          "cause": "order_id",
+          "context": "工单#⟦2026042255452817489⟧【投诉】卡号:6232 "
+        },
+        {
+          "record": 12,
+          "type": "bank_card",
+          "value": "2026091569996546371",
+          "cause": "order_id",
+          "context": "9b96f2c376\",\"order_id\":\"⟦2026091569996546371⟧\",\"snowflake\":8710880696"
+        },
+        {
+          "record": 12,
+          "type": "bank_card",
+          "value": "8710880696427124728",
+          "cause": "snowflake_luhn_pass_no_bin",
+          "context": "9996546371\",\"snowflake\":⟦8710880696427124728⟧,\"user\":{\"mobile\":\"+8613"
+        }
+      ],
+      "fn_samples": [
+        {
+          "record": 1,
+          "type": "id_card",
+          "value": "420814195612049482",
+          "cause": "url_escaped",
+          "context": "00] \"GET /search?q=id%3D⟦420814195612049482⟧\u0026card=6254733044368864\u0026e"
+        },
+        {
+          "record": 11,
+          "type": "bank_card",
+          "value": "6232 7596 1068 1155",
+          "cause": "grouped_space",
+          "context": "17489【投诉】卡号:⟦6232 7596 1068 1155⟧], tel 17705193040 App 版"
+        },
+        {
+          "record": 12,
+          "type": "phone",
+          "value": "13082514526",
+          "cause": "plus86",
+          "context": "28,\"user\":{\"mobile\":\"+86⟦13082514526⟧\",\"email\":\"zhao_yan@exam"
+        },
+        {
+          "record": 14,
+          "type": "bank_card",
+          "value": "6239 9727 7753 1997",
+          "cause": "grouped_space",
+          "context": "法登录，银行卡（⟦6239 9727 7753 1997⟧），tel 15214317030, m"
+        },
+        {
+          "record": 17,
+          "type": "bank_card",
+          "value": "6221 3908 3605 9159 591",
+          "cause": "grouped_space",
+          "context": "628199605276120，card [⟦6221 3908 3605 9159 591⟧。tel 19580633004，邮"
+        },
+        {
+          "record": 21,
+          "type": "id_card",
+          "value": "311113197211244551",
+          "cause": "url_escaped",
+          "context": "00] \"GET /search?q=id%20⟦311113197211244551⟧\u0026card=620764212875817557"
+        },
+        {
+          "record": 26,
+          "type": "bank_card",
+          "value": "6287 0106 0450 5206",
+          "cause": "grouped_space",
+          "context": "7197806268443\"},\"card\":\"⟦6287 0106 0450 5206⟧\",\"ref\":\"v3.5.159\",\"msg\""
+        },
+        {
+          "record": 44,
+          "type": "bank_card",
+          "value": "6280 1545 0604 7771",
+          "cause": "grouped_space",
+          "context": "1196203211284\"},\"card\":\"⟦6280 1545 0604 7771⟧\",\"ref\":\"831119197005297"
+        }
+      ]
+    }
+  ],
+  "leaks": {
+    "positives": 16547,
+    "string_leaks": 0,
+    "json_records": 2522,
+    "pipeline_leaks": 0,
+    "mask_errors": 0
+  },
+  "detect_seconds": {
+    "loggate": 0.0280376,
+    "regex_bounded": 0.2004096,
+    "regex_naive": 0.1518424
+  },
+  "notes": [
+    "Synthetic data only; the synthetic distribution is not a real-world log distribution.",
+    "Exact match: start, end and type must all agree. Phone spans are the 11 national digits (a +86/86 prefix is context).",
+    "Known-limitation spans (full-width digits, URL-encoded '@', digits glued to ASCII letters) are excluded from P/R/F1 and listed separately.",
+    "Labels are technical detections, not legal compliance determinations."
+  ]
+}

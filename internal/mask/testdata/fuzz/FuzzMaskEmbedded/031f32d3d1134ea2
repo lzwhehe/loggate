@@ -1,0 +1,7 @@
+go test fuzz v1
+string("0A0\xfc0\xe60A 0  \xa4\xa10\xd1\xdb  0\xe7A\xaa\xc7")
+string("@")
+string("2 0")
+uint64(7)
+byte('\x05')
+byte('\x03')

@@ -1,0 +1,27 @@
+{
+  "activity_id": 0,
+  "activity_name": "Unknown",
+  "category_name": "Uncategorized",
+  "category_uid": 0,
+  "class_name": "Base Event",
+  "class_uid": 0,
+  "metadata": {
+    "log_name": "json",
+    "product": {
+      "name": "LogGate",
+      "vendor_name": "LogGate"
+    },
+    "version": "1.3.0"
+  },
+  "severity": "Unknown",
+  "severity_id": 0,
+  "time": 1792204200000,
+  "type_name": "Base Event: Unknown",
+  "type_uid": 0,
+  "unmapped": {
+    "class": "net",
+    "msg": "synthetic",
+    "run_id": "r1",
+    "test_seq": 42
+  }
+}

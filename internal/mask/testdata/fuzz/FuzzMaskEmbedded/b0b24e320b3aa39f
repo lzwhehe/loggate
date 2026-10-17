@@ -1,0 +1,7 @@
+go test fuzz v1
+string("0")
+string("000000")
+string("0000\xb10A0\xca0000000ȅ\xeb\x9100Э0@000\xe00000\xe0000AAAA000AAA00\xccA000A\xc9AAAAA\xc3\xdf\xc3\xef\xcfAA\xd2AAAصA\xe4\xe5AAA\xeaAAAA\xeb\xca\xe2\x82\xe1A\xee000A\xe9\x9a\xc7A\xcbAA\xe9AAAAAAA\xf4A\xdf00\xc3AAAAA\xe1AAA\xe2000Ŧ00")
+uint64(77)
+byte('\x03')
+byte('\f')

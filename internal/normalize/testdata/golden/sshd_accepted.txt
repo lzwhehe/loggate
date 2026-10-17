@@ -1,0 +1,1 @@
+Oct 17 10:00:01 bastion sshd[2211]: Accepted password for alice from 192.0.2.10 port 51122 ssh2

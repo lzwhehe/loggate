@@ -1,17 +1,23 @@
 // Package route maps events to destination bitmaps.
 //
 // Rules are evaluated in order and the first match wins. A match is a set
-// of top-level field equalities on the ingested JSON object (values are
-// compared by their canonical string form, so YAML 3002 matches JSON 3002
-// and "3002"); an empty match is a catch-all. Events that match no rule get
-// an empty mask (they are stored in the WAL but delivered nowhere).
-// OCSF-aware matching (class_uid after normalisation, max_level) is M4.
+// of field equalities (values are compared by their canonical string form,
+// so YAML 3002 matches JSON 3002 and "3002"); an empty match is a
+// catch-all. A key is looked up among the top-level OCSF fields first
+// (class_uid, activity_id, ...) and then among the top-level keys of
+// "unmapped" (the ingested JSON object for Base Events). Events that match
+// no rule get an empty mask (they are stored in the WAL but delivered
+// nowhere).
+//
+// After matching, destinations whose max_level is below the event's
+// DataLevel are removed from the mask and counted (route_level_blocked).
 package route
 
 import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/lzwhehe/loggate/internal/config"
 	"github.com/lzwhehe/loggate/internal/event"
@@ -27,6 +33,10 @@ type Table struct {
 	rules []rule
 	ids   map[string]event.DestID
 	names map[event.DestID]string
+	// maxLevel[d] is the highest DataLevel d accepts (LevelUnset = any).
+	maxLevel [event.MaxDests]atomic.Uint32
+	blocked  [event.MaxDests]atomic.Uint64
+	limited  atomic.Uint64 // DestMask of destinations with a max level
 }
 
 // New builds a table. ids maps every destination name (configured or
@@ -78,21 +88,27 @@ func canon(v any) string {
 	}
 }
 
-// fields returns the ingested top-level object of ev.
-func fields(ev *event.LogEvent) map[string]any {
-	if m, ok := ev.Fields["unmapped"].(map[string]any); ok {
-		return m
+// lookup returns the routing value of key k: a top-level OCSF field, else
+// a top-level key of unmapped.
+func lookup(ev *event.LogEvent, k string) (any, bool) {
+	if v, ok := ev.Fields[k]; ok && k != "unmapped" {
+		return v, true
 	}
-	return ev.Fields
+	if m, ok := ev.Fields["unmapped"].(map[string]any); ok {
+		v, ok := m[k]
+		return v, ok
+	}
+	return nil, false
 }
 
-// Route returns the destinations for ev.
+// Route returns the destinations for ev, minus those whose max_level is
+// below ev.DataLevel.
 func (t *Table) Route(ev *event.LogEvent) event.DestMask {
-	f := fields(ev)
+	var to event.DestMask
 next:
 	for _, r := range t.rules {
 		for k, want := range r.match {
-			v, ok := f[k]
+			v, ok := lookup(ev, k)
 			if !ok {
 				continue next
 			}
@@ -104,9 +120,47 @@ next:
 				continue next
 			}
 		}
-		return r.to
+		to = r.to
+		break
 	}
-	return 0
+	if ev.DataLevel == event.LevelUnset {
+		return to
+	}
+	for _, d := range (to & event.DestMask(t.limited.Load())).Bits() {
+		if lim := event.Level(t.maxLevel[d].Load()); lim != event.LevelUnset && ev.DataLevel > lim {
+			to = to.Clear(d)
+			t.blocked[d].Add(1)
+		}
+	}
+	return to
+}
+
+// SetMaxLevel sets the highest DataLevel destination id accepts
+// (LevelUnset removes the limit).
+func (t *Table) SetMaxLevel(id event.DestID, l event.Level) {
+	if !id.Valid() {
+		return
+	}
+	t.maxLevel[id].Store(uint32(l))
+	for {
+		old := t.limited.Load()
+		nw := uint64(event.DestMask(old).Clear(id))
+		if l != event.LevelUnset {
+			nw = uint64(event.DestMask(old).Set(id))
+		}
+		if t.limited.CompareAndSwap(old, nw) {
+			return
+		}
+	}
+}
+
+// LevelBlocked returns how many events were kept away from id by its
+// max_level.
+func (t *Table) LevelBlocked(id event.DestID) uint64 {
+	if !id.Valid() {
+		return 0
+	}
+	return t.blocked[id].Load()
 }
 
 // ID returns the DestID for a destination name.

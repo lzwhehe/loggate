@@ -1,7 +1,6 @@
 package httpingest
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/lzwhehe/loggate/internal/clock"
 	"github.com/lzwhehe/loggate/internal/event"
+	"github.com/lzwhehe/loggate/internal/mask"
 	"github.com/lzwhehe/loggate/internal/wal"
 )
 
@@ -129,8 +129,8 @@ func TestRespondsOnlyAfterFsync(t *testing.T) {
 	if um := ev.Fields["unmapped"].(map[string]any); um["msg"] != "hello" {
 		t.Fatalf("unmapped = %v", um)
 	}
-	if !bytes.Equal(ev.Raw, []byte(`{"msg":"hello","n":1}`)) {
-		t.Fatalf("raw = %s", ev.Raw)
+	if ev.Raw != nil || ev.Fields["class_uid"] != float64(0) {
+		t.Fatalf("raw = %s class_uid = %v", ev.Raw, ev.Fields["class_uid"])
 	}
 }
 
@@ -279,5 +279,90 @@ func TestBackpressure429AndStats(t *testing.T) {
 	e.h.ServeHTTP(srec, req)
 	if srec.Code != http.StatusOK || !strings.Contains(srec.Body.String(), `"l1_pending":7`) {
 		t.Fatalf("stats: %d %s", srec.Code, srec.Body.String())
+	}
+}
+
+// Synthetic test values: a valid-checksum ID number (GB 11643 example), a
+// Visa test card, and a phone number with an allocated prefix.
+const (
+	testID    = "11010519491231002X"
+	testCard  = "4111111111111111"
+	testPhone = "13812345678"
+)
+
+func newMasker(t *testing.T) *mask.Engine {
+	t.Helper()
+	m, err := mask.New(mask.Config{Fields: map[string]mask.Policy{"unmapped.test_seq": mask.PolicyKeep}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestMaskedBeforeWAL(t *testing.T) {
+	e := newEnv(t, wal.Options{}, Options{Masker: newMasker(t)})
+	body := `{"test_seq":` + testCard + `,"id":"` + testID + `","card":"` + testCard + `","note":"call ` + testPhone + `"}`
+	if rec := e.post(body); rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	lines := "sshd[1]: Failed password for " + testPhone + " from 192.0.2.1 port 22 ssh2\r\n\nplain " + testID + "\n"
+	if rec := e.post(lines, "Content-Type", "text/plain; charset=utf-8"); rec.Code != http.StatusOK {
+		t.Fatalf("text status %d %s", rec.Code, rec.Body)
+	}
+	// Raw WAL bytes: no PII except the field explicitly kept.
+	it := e.w.NewIterator(0)
+	defer it.Close()
+	var payloads []string
+	for {
+		r, err := it.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, string(r.Payload))
+	}
+	if len(payloads) != 3 {
+		t.Fatalf("wal has %d records", len(payloads))
+	}
+	for i, p := range payloads {
+		for _, pii := range []string{testID, testPhone, `"` + testCard + `"`, "call " + testCard} {
+			if strings.Contains(p, pii) {
+				t.Errorf("record %d contains %q: %s", i, pii, p)
+			}
+		}
+	}
+	if !strings.Contains(payloads[0], `"test_seq":`+testCard) {
+		t.Errorf("kept field was masked: %s", payloads[0])
+	}
+	evs := walEvents(t, e.w)
+	if evs[0].DataLevel != event.LevelImportant || len(evs[0].DataClass) != 3 {
+		t.Errorf("json event level %v classes %v", evs[0].DataLevel, evs[0].DataClass)
+	}
+	if evs[1].ClassUID != 3002 || evs[1].StatusID != 2 || evs[2].ClassUID != 0 {
+		t.Errorf("text events: %+v / %+v", evs[1], evs[2])
+	}
+	if u := evs[1].Fields["user"].(map[string]any)["name"]; u != "138****5678" {
+		t.Errorf("user.name %v", u)
+	}
+}
+
+func TestErrorsDoNotEchoPayload(t *testing.T) {
+	e := newEnv(t, wal.Options{}, Options{Masker: newMasker(t)})
+	for _, body := range []string{
+		`{"id":"` + testID + `" "x":1}`,
+		`[{"id":"` + testID + `"}, ` + testID + `]`,
+		`{"id":` + testID + `}`,
+		testID,
+		`[{"a":1}, {"id":"` + testID + `"` + "\x01" + `}]`,
+	} {
+		rec := e.post(body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status %d for %q", rec.Code, body)
+		}
+		if b := rec.Body.String(); strings.Contains(b, testID[:6]) || strings.Contains(b, "1949") {
+			t.Errorf("error response echoes payload: %s", b)
+		}
 	}
 }

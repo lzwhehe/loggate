@@ -1,0 +1,7 @@
+go test fuzz v1
+string("A")
+string("\x890A\xf3AAAA\xf6\xefAA\x9fA0AփA\x80\xccA\x9b\xcbA\xfa")
+string("\xb3AA")
+uint64(5)
+byte('\x04')
+byte('O')

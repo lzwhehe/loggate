@@ -1,0 +1,1 @@
+Oct 17 10:00:05 bastion sshd[2215]: Connection closed by 192.0.2.10 port 51122
