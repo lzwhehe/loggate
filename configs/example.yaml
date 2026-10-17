@@ -1,0 +1,31 @@
+# LogGate M1 example configuration.
+# Only keys implemented in M1 are accepted; unknown keys are rejected.
+node_id: gw-1
+data_dir: ./data
+
+wal:
+  segment_bytes: 64MiB     # roll threshold
+  fsync_interval: 10ms     # group commit: wait at most this long for more events
+  fsync_max_events: 512    # ...or fsync as soon as a batch holds this many
+
+ingest:
+  http:
+    listen: "127.0.0.1:8080"
+    max_body: 1MiB
+    # Bearer tokens bind requests to a SourceID ("http:<source>").
+    # With no tokens, every request is accepted as "http:anonymous".
+    # tokens:
+    #   - { source: app1, token_env: LOGGATE_TOKEN_APP1 }
+
+idempotency:
+  # HMAC key (>= 16 bytes) for gateway-assigned idem keys. If the variable
+  # is unset, a random per-process key is used.
+  key_env: LOGGATE_IDEM_KEY
+
+destinations:
+  - name: archive
+    type: file
+    config: { path: ./out/archive.jsonl }
+
+routes:
+  - { match: {}, to: [archive] }

@@ -1,0 +1,19 @@
+# runtime data
+data/
+out/
+bin/
+*.db
+*.db-journal
+*.seg
+
+# raw benchmark output (summaries are committed, large raw files are not)
+bench/results/**/raw/
+bench/results/**/*.csv.gz
+bench/results/**/*.bin
+
+# tooling
+*.test
+*.out
+coverage.*
+.idea/
+.vscode/
