@@ -1,4 +1,4 @@
-# LogGate example configuration (M4).
+# LogGate example configuration (M5).
 # Only implemented keys are accepted; unknown keys are rejected.
 node_id: gw-1
 data_dir: ./data          # wal/, state.db (bbolt: L1, ckpt, registry), dlq/
@@ -45,9 +45,17 @@ disk:
   max_bytes: 0
   check_interval: 1s
 
-# Token-protected admin API (POST /v1/admin/{register,unregister,shutdown}).
-# Disabled unless a token (>= 16 bytes) is configured.
-# admin: { token_env: LOGGATE_ADMIN_TOKEN }
+# Management plane.
+#  - token/token_env: token-protected admin API
+#    (POST /v1/admin/{register,unregister,shutdown}); disabled unless a
+#    token (>= 16 bytes) is configured.
+#  - metrics: Prometheus GET /metrics listen address (default ":9091").
+#  - ui: read-only web dashboard GET /ui/ (default ":8081").
+#  "off" disables a listener.
+admin:
+  # token_env: LOGGATE_ADMIN_TOKEN
+  metrics: "127.0.0.1:9091"
+  ui: "127.0.0.1:8081"
 
 # PII masking (DESIGN §7). Runs before the WAL append: unmasked PII never
 # reaches disk. Every field not listed is "scan"ned (raw_data and unmapped

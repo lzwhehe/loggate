@@ -53,6 +53,18 @@ type Deps struct {
 	OnQuota string
 	// DestName maps IDs to names for logs and DLQ entries.
 	DestName func(event.DestID) string
+	// Observer, if set, is told about every delivery outcome (metrics).
+	Observer Observer
+}
+
+// Observer receives per-envelope delivery outcomes. Implementations must
+// be cheap and must not block (they run on the slot consumer goroutine).
+type Observer interface {
+	// Delivered is called when a sink confirmed env.
+	Delivered(env *sink.Envelope, now time.Time)
+	// DeliveryError is called for every failed envelope of a real send
+	// attempt (not for results interrupted by a drain deadline).
+	DeliveryError(dest event.DestID, kind delivery.Kind)
 }
 
 func (d *Deps) name(id event.DestID) string {

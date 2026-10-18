@@ -74,6 +74,10 @@ type Options struct {
 	FS     FS          // default OSFS{}
 	Clock  clock.Clock // default clock.Real()
 	Logger *slog.Logger
+	// OnFsync, if set, is called on the writer goroutine with the duration
+	// of every successful segment fsync of a group commit (metrics). It
+	// must not block.
+	OnFsync func(time.Duration)
 }
 
 func (o *Options) withDefaults() {
@@ -325,6 +329,20 @@ func (w *WAL) Segments() []uint64 {
 	return out
 }
 
+// Bytes returns the fsynced size of all known segments (the committed
+// prefix of each), i.e. the WAL's durable footprint.
+func (w *WAL) Bytes() int64 {
+	w.segMu.RLock()
+	defer w.segMu.RUnlock()
+	var n int64
+	for _, s := range w.segs {
+		if !s.removed {
+			n += s.committed.Load()
+		}
+	}
+	return n
+}
+
 // Poisoned returns the bases of segments poisoned by write/fsync errors
 // during this process lifetime.
 func (w *WAL) Poisoned() []uint64 {
@@ -548,6 +566,7 @@ func (w *WAL) commit(batch []*request) {
 		return
 	}
 	seg.size += int64(len(buf))
+	syncStart := time.Now() // real time: fsync latency is a wall-clock measurement
 	if err := seg.f.Sync(); err != nil {
 		err = fmt.Errorf("wal: fsync segment %d: %w", seg.meta.base, err)
 		w.poison(err)
@@ -556,6 +575,9 @@ func (w *WAL) commit(batch []*request) {
 	}
 	seg.synced = seg.size
 	seg.meta.committed.Store(seg.synced)
+	if w.opts.OnFsync != nil {
+		w.opts.OnFsync(time.Since(syncStart))
+	}
 
 	// Durable: acknowledge, then hand records to the dispatcher.
 	for _, r := range ok {

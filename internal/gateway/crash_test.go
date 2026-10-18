@@ -63,7 +63,7 @@ func TestCrashAfterCommitBeforeDispatch(t *testing.T) {
 	acked := post(t, g.Addr(), 100, plain)
 
 	crashed := make(chan struct{})
-	go func() { g.crash(); close(crashed) }()
+	go func() { g.Crash(); close(crashed) }()
 	eventually(t, "slots aborted", func() bool { return slotsAborted(g) })
 	close(gate) // the dispatcher now only sees aborted slots and a closed L1
 	<-crashed
@@ -105,7 +105,7 @@ func TestCrashAfterParkCommit(t *testing.T) {
 	eventually(t, "parked and stored", func() bool {
 		return g.st.Pending(fID) == 100 && len(sqliteRows(t, dir)) == 100
 	})
-	g.crash()
+	g.Crash()
 
 	down.Store(false)
 	g2 := start(t, cfg, fakes)
@@ -134,7 +134,7 @@ routes:
 	g := start(t, cfg, nil)
 	acked := post(t, g.Addr(), 100, plain)
 	eventually(t, "delivered", func() bool { return g.Delivered() == 200 })
-	g.crash()
+	g.Crash()
 	if n := len(readFileSink(t, archive)); n != 100 {
 		t.Fatalf("archive has %d seqs before restart", n)
 	}
@@ -187,7 +187,7 @@ func TestRepeatedCrashesDuringOutage(t *testing.T) {
 		if round < 2 {
 			n := len(acked)
 			eventually(t, "sqlite caught up", func() bool { return len(sqliteRows(t, dir)) == n })
-			g.crash()
+			g.Crash()
 			continue
 		}
 		eventually(t, "all delivered", func() bool {

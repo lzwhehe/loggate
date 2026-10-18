@@ -30,6 +30,7 @@ import (
 	"github.com/lzwhehe/loggate/internal/event"
 	httpingest "github.com/lzwhehe/loggate/internal/ingest/http"
 	"github.com/lzwhehe/loggate/internal/mask"
+	"github.com/lzwhehe/loggate/internal/metrics"
 	"github.com/lzwhehe/loggate/internal/route"
 	"github.com/lzwhehe/loggate/internal/sink"
 	filesink "github.com/lzwhehe/loggate/internal/sink/file"
@@ -59,6 +60,13 @@ type Options struct {
 	// BeforeDispatch is called before each live batch is dispatched (test
 	// hook for "committed but not yet dispatched" crash points).
 	BeforeDispatch func()
+	// Metrics, if set, receives ingest, WAL fsync, delivery and DLQ
+	// events. The caller decides whether and where to serve it, and sets
+	// its snapshot source (MetricsSnapshot).
+	Metrics *metrics.Metrics
+	// OnAccepted, if set, receives every acknowledged event after masking
+	// (demo dashboard). See httpingest.Options.OnAccepted.
+	OnAccepted func(evs []*event.LogEvent, hits []int)
 }
 
 type slotTable [event.MaxDests]*worker.Slot
@@ -69,6 +77,7 @@ type Gateway struct {
 	log *slog.Logger
 	clk clock.Clock
 	reg *sink.Registry
+	met *metrics.Metrics
 
 	st       *state.Store
 	wal      *wal.WAL
@@ -109,6 +118,7 @@ type Gateway struct {
 
 	dispDone chan struct{}
 	started  bool
+	running  atomic.Bool
 	stopOnce sync.Once
 	shutErr  error
 }
@@ -137,7 +147,7 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 		opts.Sinks = BuiltinSinks()
 	}
 	g = &Gateway{
-		cfg: cfg, log: opts.Logger, clk: opts.Clock, reg: opts.Sinks,
+		cfg: cfg, log: opts.Logger, clk: opts.Clock, reg: opts.Sinks, met: opts.Metrics,
 		claims: state.NewClaims(), unregistered: map[event.DestID]bool{}, dests: map[string]config.Destination{},
 		origDests: map[string]config.Destination{}, shutdownReq: make(chan struct{}),
 	}
@@ -175,7 +185,12 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 	}
 
 	// 2. WAL: torn-tail truncation; seqs are never reused (§0.5 item 1).
+	var onFsync func(time.Duration)
+	if g.met != nil {
+		onFsync = g.met.WALFsync
+	}
 	g.wal, err = wal.Open(wal.Options{
+		OnFsync:        onFsync,
 		Dir:            filepath.Join(cfg.DataDir, "wal"),
 		SegmentBytes:   cfg.WAL.SegmentBytes.Int64(),
 		FsyncInterval:  cfg.WAL.FsyncInterval,
@@ -247,6 +262,13 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 	if err != nil {
 		return nil, fmt.Errorf("gateway: %w", err)
 	}
+	if m := g.met; m != nil {
+		g.dlq.SetOnAppend(func(es []dlq.Entry) {
+			for _, e := range es {
+				m.DLQ(e.DestName, e.Reason, 1)
+			}
+		})
+	}
 	seed := opts.BackoffSeed
 	if seed == 0 {
 		var b [8]byte
@@ -260,6 +282,9 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 		Backoff: delivery.NewBackoff(cfg.Retry.Base, cfg.Retry.Max, seed),
 		Budget:  delivery.Budget{MaxAttempts: cfg.Retry.MaxAttempts, MaxAge: cfg.Retry.MaxAge},
 		Quota:   quota, OnQuota: cfg.L1.OnQuota, DestName: g.destName,
+	}
+	if g.met != nil {
+		g.deps.Observer = deliveryObserver{g}
 	}
 	g.disp = dispatch.New(dispatch.Options{
 		Deps: g.deps, Trackers: g.trackers, Slot: g.slot, MissingReason: g.missingReason,
@@ -301,7 +326,12 @@ func New(ctx context.Context, cfg *config.Config, opts Options) (g *Gateway, err
 		MaxBody: cfg.Ingest.HTTP.MaxBody.Int64(), Tokens: tokens, Keyer: keyer,
 		Clock: opts.Clock, Logger: opts.Logger,
 		Backpressure: g.backpressure, Stats: func() any { return g.Stats() },
-		Masker: g.masker,
+		Masker: g.masker, OnAccepted: opts.OnAccepted,
+		OnResult: func(source, result string, n int) {
+			if g.met != nil {
+				g.met.IngestEvents(source, result, n)
+			}
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gateway: %w", err)
@@ -498,6 +528,7 @@ func (g *Gateway) Start() error {
 			g.log.Error("http server stopped", "err", err)
 		}
 	}()
+	g.running.Store(true)
 	g.log.Info("loggate started", "http", ln.Addr().String(), "data_dir", g.cfg.DataDir,
 		"next_seq", g.wal.NextSeq(), "replay_from", g.replayFrom, "replayed", n, "l1_records", g.st.Count())
 	return nil
@@ -702,6 +733,7 @@ func (g *Gateway) Stats() Stats {
 // shutdown every acked event is either delivered or in L1, and the final
 // checkpoint covers everything dispatched, so a restart replays nothing.
 func (g *Gateway) Shutdown(ctx context.Context) error {
+	g.running.Store(false)
 	g.stopOnce.Do(func() {
 		var errs []error
 		g.http.SetDraining(true)
@@ -750,11 +782,15 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	return g.shutErr
 }
 
-// crash stops the gateway as abruptly as an in-process test can: pending
-// L1 operations are discarded uncommitted, no final checkpoint is written,
-// in-flight sink results are ignored and L2 contents are dropped. (The WAL
-// itself already fsynced everything that was acknowledged.)
-func (g *Gateway) crash() {
+// Crash stops the gateway as abruptly as an in-process caller can (a
+// SIMULATED crash, used by crash tests and the demo's "simulate crash"):
+// pending L1 operations are discarded uncommitted, no final checkpoint is
+// written, in-flight sink results are ignored and L2 contents are dropped.
+// The WAL itself already fsynced everything that was acknowledged; its
+// file handles are closed normally. A real kill -9 is exercised by the
+// faultbench S3 scenario. The data directory can be reopened with New.
+func (g *Gateway) Crash() {
+	g.running.Store(false)
 	g.stopOnce.Do(func() {
 		if g.st != nil {
 			_ = g.st.Abort()

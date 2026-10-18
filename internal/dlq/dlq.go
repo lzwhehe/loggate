@@ -62,6 +62,19 @@ type Log struct {
 
 	total  atomic.Uint64
 	byDest [event.MaxDests]atomic.Uint64
+
+	onAppend atomic.Pointer[func([]Entry)]
+}
+
+// SetOnAppend registers fn to be called after every durable Append (after
+// the fsync, outside the lock) with the appended entries (metrics). fn
+// must not modify the entries or block.
+func (l *Log) SetOnAppend(fn func([]Entry)) {
+	if fn == nil {
+		l.onAppend.Store(nil)
+		return
+	}
+	l.onAppend.Store(&fn)
 }
 
 func segName(n uint64) string { return fmt.Sprintf("%020d%s", n, segSuffix) }
@@ -147,6 +160,16 @@ func (l *Log) Append(entries []Entry) error {
 		buf = binary.LittleEndian.AppendUint32(buf, crc32.Checksum(b, castagnoli))
 		buf = append(buf, b...)
 	}
+	if err := l.append(entries, buf); err != nil {
+		return err
+	}
+	if fn := l.onAppend.Load(); fn != nil {
+		(*fn)(entries)
+	}
+	return nil
+}
+
+func (l *Log) append(entries []Entry, buf []byte) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.f == nil {

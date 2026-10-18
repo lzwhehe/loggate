@@ -225,7 +225,9 @@ func BuildGatewayConfig(sc *scenario.Scenario, dataDir, outDir, listen string, m
 			"tokens": []any{map[string]any{"source": "loadgen", "token_env": "LOGGATE_BENCH_TOKEN"}},
 		}},
 		"idempotency": map[string]any{"key_env": "LOGGATE_IDEM_KEY"},
-		"admin":       map[string]any{"token_env": "LOGGATE_ADMIN_TOKEN"},
+		// Metrics on an ephemeral loopback port; no dashboard (bench runs
+		// must not collide with a developer's :9091/:8081).
+		"admin": map[string]any{"token_env": "LOGGATE_ADMIN_TOKEN", "metrics": "127.0.0.1:0", "ui": "off"},
 	}
 	cfg = scenario.DeepMerge(cfg, sc.Gateway)
 	cfg["destinations"] = dests

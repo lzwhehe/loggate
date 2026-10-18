@@ -116,13 +116,24 @@ type Disk struct {
 	CheckInterval time.Duration `yaml:"check_interval"` // default 1s
 }
 
-// Admin enables the token-protected admin endpoints under /v1/admin/
-// (register, unregister, shutdown). They are disabled unless a token is set.
-// Exactly one of Token and TokenEnv may be set.
+// Admin configures the management plane.
+//
+// Token/TokenEnv enable the token-protected admin endpoints under
+// /v1/admin/ (register, unregister, shutdown); they are disabled unless a
+// token is set, and at most one of the two may be set.
+//
+// Metrics and UI are listen addresses of the Prometheus endpoint
+// (GET /metrics) and the read-only web dashboard (GET /ui/). "off"
+// disables a listener.
 type Admin struct {
 	Token    string `yaml:"token"`
 	TokenEnv string `yaml:"token_env"`
+	Metrics  string `yaml:"metrics"` // default ":9091"
+	UI       string `yaml:"ui"`      // default ":8081"
 }
+
+// Off is the listen address value that disables a listener.
+const Off = "off"
 
 // Enabled reports whether an admin token is configured.
 func (a Admin) Enabled() bool { return a.Token != "" || a.TokenEnv != "" }
@@ -282,6 +293,8 @@ const (
 	DefaultBatchWait          = 20 * time.Millisecond
 	DefaultBreakerFailures    = 5
 	DefaultBreakerOpenFor     = 10 * time.Second
+	DefaultMetricsListen      = ":9091"
+	DefaultUIListen           = ":8081"
 )
 
 // supportedSinkTypes lists the destination types implemented so far.
@@ -371,6 +384,12 @@ func (c *Config) ApplyDefaults() {
 		l.OnQuota = DefaultOnQuota
 	}
 	setDur(&c.Disk.CheckInterval, DefaultDiskCheckInterval)
+	if c.Admin.Metrics == "" {
+		c.Admin.Metrics = DefaultMetricsListen
+	}
+	if c.Admin.UI == "" {
+		c.Admin.UI = DefaultUIListen
+	}
 	if c.Masking.HMACKeyEnv == "" {
 		c.Masking.HMACKeyEnv = DefaultHMACKeyEnv
 	}

@@ -68,7 +68,31 @@ type Options struct {
 	// Masker masks every event before it is routed and appended; nil
 	// disables masking (benchmarks only).
 	Masker *mask.Engine
+	// OnResult, if set, is called once per request with the SourceID
+	// ("unauthenticated" if the token was missing or wrong), the result
+	// (see the Result* constants) and the number of events it covers:
+	// the event count for accepted and wal_error, 1 for results decided
+	// before the body is parsed (metrics).
+	OnResult func(source, result string, n int)
+	// OnAccepted, if set, is called after a successful (fsynced) append
+	// with the masked events and the number of masked spans in each. The
+	// events must be treated as read-only. Used by the demo dashboard; the
+	// pre-mask input is never exposed.
+	OnAccepted func(evs []*event.LogEvent, hits []int)
 }
+
+// Ingest results reported to Options.OnResult.
+const (
+	ResultAccepted     = "accepted"
+	ResultBackpressure = "backpressure"
+	ResultUnauthorized = "unauthorized"
+	ResultBadRequest   = "bad_request"
+	ResultTooLarge     = "too_large"
+	ResultWALError     = "wal_error"
+	ResultDraining     = "draining"
+	// UnauthenticatedSource labels requests without a valid token.
+	UnauthenticatedSource = "unauthenticated"
+)
 
 type tokenEntry struct {
 	digest   [sha256.Size]byte
@@ -91,6 +115,8 @@ type Handler struct {
 	stats    func() any
 	masker   *mask.Engine
 	rejected atomic.Uint64
+	onResult func(source, result string, n int)
+	onAccept func(evs []*event.LogEvent, hits []int)
 }
 
 // New returns a handler.
@@ -114,6 +140,7 @@ func New(app Appender, router Router, opts Options) (*Handler, error) {
 		wal: app, router: router, keyer: opts.Keyer, clock: opts.Clock,
 		log: opts.Logger.With("component", "ingest.http"), maxBody: opts.MaxBody,
 		backp: opts.Backpressure, stats: opts.Stats, masker: opts.Masker,
+		onResult: opts.OnResult, onAccept: opts.OnAccepted,
 		retryAft: strconv.Itoa(int(max(1, opts.RetryAfter.Round(time.Second)/time.Second))),
 	}
 	for tok, src := range opts.Tokens {
@@ -185,19 +212,31 @@ func (h *Handler) authenticate(r *http.Request) (string, bool) {
 	return src, found == 1
 }
 
+func (h *Handler) result(source, result string, n int) {
+	if h.onResult != nil {
+		h.onResult(source, result, n)
+	}
+}
+
 func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
+	sourceID, ok := h.authenticate(r)
+	if !ok {
+		sourceID = UnauthenticatedSource
+	}
 	if h.draining.Load() {
+		h.result(sourceID, ResultDraining, 1)
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"shutting down"})
 		return
 	}
-	sourceID, ok := h.authenticate(r)
 	if !ok {
+		h.result(sourceID, ResultUnauthorized, 1)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="loggate"`)
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"missing or invalid bearer token"})
 		return
 	}
 	if h.backp != nil && h.backp() {
 		h.rejected.Add(1)
+		h.result(sourceID, ResultBackpressure, 1)
 		w.Header().Set("Retry-After", h.retryAft)
 		writeJSON(w, http.StatusTooManyRequests, errorResponse{"delivery backlog over quota, retry later"})
 		return
@@ -206,9 +245,11 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
+			h.result(sourceID, ResultTooLarge, 1)
 			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse{fmt.Sprintf("body exceeds %d bytes", h.maxBody)})
 			return
 		}
+		h.result(sourceID, ResultBadRequest, 1)
 		writeJSON(w, http.StatusBadRequest, errorResponse{"read body failed"})
 		return
 	}
@@ -220,11 +261,17 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 		evs, err = splitEvents(body, now)
 	}
 	if err != nil {
+		h.result(sourceID, ResultBadRequest, 1)
 		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 		return
 	}
 
 	items := make([]wal.Item, len(evs))
+	var accepted []*event.LogEvent
+	var hits []int
+	if h.onAccept != nil {
+		accepted, hits = make([]*event.LogEvent, len(evs)), make([]int, len(evs))
+	}
 	for i, n := range evs {
 		ev := &event.LogEvent{
 			SourceID:   sourceID,
@@ -239,17 +286,29 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 		if h.masker != nil {
 			res := h.masker.MaskEvent(ev.Fields)
 			ev.DataClass, ev.DataLevel = res.Classes(), res.Level
+			if hits != nil {
+				hits[i] = res.Hits
+			}
 		}
 		ev.Targets = h.router.Route(ev)
 		items[i] = wal.Item{Targets: ev.Targets, Encode: h.encoder(ev)}
+		if accepted != nil {
+			accepted[i] = ev
+		}
 	}
 
 	res, err := h.wal.Append(r.Context(), items)
 	if err != nil {
 		// Detailed cause goes to the log only; WAL errors may contain paths.
 		h.log.Warn("wal append failed", "source", sourceID, "events", len(items), "err", err)
+		h.result(sourceID, ResultWALError, len(items))
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{"not persisted, retry later"})
 		return
+	}
+	h.result(sourceID, ResultAccepted, res.Count)
+	if h.onAccept != nil {
+		// The WAL writer has finished encoding (seq and idem key are set).
+		h.onAccept(accepted, hits)
 	}
 	writeJSON(w, http.StatusOK, acceptResponse{Accepted: res.Count, FirstSeq: res.FirstSeq})
 }

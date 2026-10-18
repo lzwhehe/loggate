@@ -441,6 +441,9 @@ func (s *Slot) process(batch []*sink.Envelope) {
 	for i, env := range batch {
 		err := errs[i]
 		if err == nil {
+			if s.d.Observer != nil {
+				s.d.Observer.Delivered(env, now)
+			}
 			s.succeeded(env)
 			continue
 		}
@@ -452,6 +455,9 @@ func (s *Slot) process(batch []*sink.Envelope) {
 			continue
 		}
 		kind, retryAfter := delivery.Classify(err)
+		if s.d.Observer != nil {
+			s.d.Observer.DeliveryError(env.Dest, kind)
+		}
 		why := ""
 		if kind == delivery.NonRetryable {
 			why = "non_retryable"

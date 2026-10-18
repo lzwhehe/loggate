@@ -149,7 +149,7 @@ func start(t *testing.T, cfg *config.Config, fakes map[string]*fakeSink, mod ...
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(g.crash) // no-op after Shutdown; releases files if a test fails early
+	t.Cleanup(g.Crash) // no-op after Shutdown; releases files if a test fails early
 	if err := g.Start(); err != nil {
 		t.Fatal(err)
 	}
