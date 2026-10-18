@@ -1,0 +1,2548 @@
+{
+  "scenario": "S4b",
+  "title": "unregister destination, orphan TTL -\u003e DLQ",
+  "profile": "full",
+  "resolved": {
+    "Name": "S4b",
+    "Title": "unregister destination, orphan TTL -\u003e DLQ",
+    "Description": "soar is unregistered through the admin API at 60s and never comes back. Its in-flight batch completes, the rest of its queue and every later event for it are parked (NotActive) and, after orphan_ttl = 30 s, moved to the DLQ by the sweeper with reason orphan_ttl_expired. Nothing may be lost; the other sinks are unaffected. (The TTL is not scaled by the profile.)\n",
+    "Platforms": null,
+    "Duration": 300000000000,
+    "Classes": [
+      {
+        "Name": "auth",
+        "Weight": 0.5
+      },
+      {
+        "Name": "net",
+        "Weight": 0.3
+      },
+      {
+        "Name": "app",
+        "Weight": 0.2
+      }
+    ],
+    "Destinations": [
+      {
+        "Name": "archive",
+        "Type": "file",
+        "Mock": false,
+        "Config": null,
+        "Queue": null,
+        "Breaker": null
+      },
+      {
+        "Name": "siem",
+        "Type": "sqlite",
+        "Mock": false,
+        "Config": null,
+        "Queue": null,
+        "Breaker": null
+      },
+      {
+        "Name": "soar",
+        "Type": "webhook",
+        "Mock": true,
+        "Config": {
+          "batch": true,
+          "timeout": "2s"
+        },
+        "Queue": null,
+        "Breaker": {
+          "failures": 5,
+          "open_for": "10s"
+        }
+      },
+      {
+        "Name": "probe",
+        "Type": "webhook",
+        "Mock": true,
+        "Config": {
+          "batch": true,
+          "timeout": "2s"
+        },
+        "Queue": null,
+        "Breaker": null
+      }
+    ],
+    "Routes": [
+      {
+        "Match": {
+          "class": "auth"
+        },
+        "To": [
+          "archive",
+          "siem",
+          "soar",
+          "probe"
+        ]
+      },
+      {
+        "Match": {
+          "class": "net"
+        },
+        "To": [
+          "archive",
+          "siem",
+          "probe"
+        ]
+      },
+      {
+        "Match": {},
+        "To": [
+          "archive"
+        ]
+      }
+    ],
+    "Gateway": {
+      "l1": {
+        "checkpoint_interval": "1s",
+        "gc_interval": "10s",
+        "orphan_ttl": "30s",
+        "sweep_interval": "1s"
+      },
+      "masking": {
+        "fields": {
+          "unmapped.run_id": "keep",
+          "unmapped.scheduled_send_ns": "keep",
+          "unmapped.test_seq": "keep"
+        }
+      },
+      "retry": {
+        "base": "200ms",
+        "max": "30s",
+        "max_age": "24h",
+        "max_attempts": 20
+      },
+      "wal": {
+        "fsync_interval": "10ms",
+        "fsync_max_events": 512,
+        "segment_bytes": "64MiB"
+      }
+    },
+    "DestOverrides": null,
+    "Timeline": [
+      {
+        "At": 60000000000,
+        "Action": "unregister",
+        "Dest": "soar",
+        "Mode": "",
+        "DelayMS": 0,
+        "ErrorCode": 0,
+        "ErrorRate": 0,
+        "Seed": 0
+      }
+    ],
+    "FaultWindow": {
+      "Start": 60000000000,
+      "End": 300000000000,
+      "Label": ""
+    },
+    "Checks": [
+      {
+        "Metric": "lost",
+        "Dests": [
+          "all"
+        ],
+        "Op": "eq",
+        "Value": 0,
+        "Note": "no acked event lost"
+      },
+      {
+        "Metric": "misrouted",
+        "Dests": [
+          "all"
+        ],
+        "Op": "eq",
+        "Value": 0,
+        "Note": "oracle routing agrees"
+      },
+      {
+        "Metric": "dlq_and_delivered",
+        "Dests": [
+          "all"
+        ],
+        "Op": "eq",
+        "Value": 0,
+        "Note": "never both delivered and dead"
+      },
+      {
+        "Metric": "dup_stored",
+        "Dests": [
+          "siem"
+        ],
+        "Op": "eq",
+        "Value": 0,
+        "Note": "idempotent sink stores no duplicate"
+      }
+    ],
+    "ExtraChecks": [
+      {
+        "Metric": "dup_raw",
+        "Dests": [
+          "archive",
+          "siem",
+          "probe"
+        ],
+        "Op": "eq",
+        "Value": 0,
+        "Note": ""
+      },
+      {
+        "Metric": "dlq_reason:orphan_ttl_expired",
+        "Dests": [
+          "soar"
+        ],
+        "Op": "gt",
+        "Value": 0,
+        "Note": ""
+      },
+      {
+        "Metric": "dlq",
+        "Dests": [
+          "archive",
+          "siem",
+          "probe"
+        ],
+        "Op": "eq",
+        "Value": 0,
+        "Note": ""
+      }
+    ],
+    "Profiles": null,
+    "Profile": "full",
+    "Rate": 2000
+  },
+  "reps": [
+    {
+      "rep": 1,
+      "run_id": "S4b-r1-02e428b1",
+      "dir": "/dev/shm/lgbench/results-full-linux/raw/S4b/rep1",
+      "reconcile": {
+        "scenario": "S4b",
+        "profile": "full",
+        "run_id": "S4b-r1-02e428b1",
+        "load": {
+          "planned": 600000,
+          "acked": 600000,
+          "by_status": {
+            "200": 600000
+          }
+        },
+        "fault_window_s": [
+          60,
+          300
+        ],
+        "destinations": [
+          {
+            "dest": "archive",
+            "type": "file",
+            "expected": 600000,
+            "received_unique": 600000,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.051320076,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 600000,
+              "p50_ms": 50.157667,
+              "p99_ms": 83.435035,
+              "p999_ms": 89.554415,
+              "max_ms": 137.22226
+            },
+            "latency_baseline": {
+              "n": 120000,
+              "p50_ms": 49.682129,
+              "p99_ms": 83.85968,
+              "p999_ms": 92.23473,
+              "max_ms": 137.22226
+            },
+            "latency_during": {
+              "n": 480000,
+              "p50_ms": 50.277346,
+              "p99_ms": 83.368893,
+              "p999_ms": 88.87303,
+              "max_ms": 94.989919
+            }
+          },
+          {
+            "dest": "probe",
+            "type": "webhook",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.004608912,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 27.611516,
+              "p99_ms": 44.576689,
+              "p999_ms": 48.325977,
+              "max_ms": 133.311106
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 27.477785,
+              "p99_ms": 45.331216,
+              "p999_ms": 96.811106,
+              "max_ms": 133.311106
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 27.645486,
+              "p99_ms": 44.386981,
+              "p999_ms": 47.531234,
+              "max_ms": 53.756202
+            }
+          },
+          {
+            "dest": "siem",
+            "type": "sqlite",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.051320076,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 50.003748,
+              "p99_ms": 85.206706,
+              "p999_ms": 91.30762,
+              "max_ms": 125.876168
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 48.896106,
+              "p99_ms": 84.911546,
+              "p999_ms": 92.819649,
+              "max_ms": 125.876168
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 50.314744,
+              "p99_ms": 85.262325,
+              "p999_ms": 91.080354,
+              "max_ms": 99.68986
+            }
+          },
+          {
+            "dest": "soar",
+            "type": "webhook",
+            "expected": 299502,
+            "received_unique": 59887,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 239615,
+            "dlq_reasons": {
+              "orphan_ttl_expired": 239615
+            },
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 59887,
+              "p50_ms": 26.009583,
+              "p99_ms": 43.105671,
+              "p999_ms": 89.202553,
+              "max_ms": 129.202553
+            },
+            "latency_baseline": {
+              "n": 59887,
+              "p50_ms": 26.009583,
+              "p99_ms": 43.105671,
+              "p999_ms": 89.202553,
+              "max_ms": 129.202553
+            }
+          }
+        ],
+        "dlq_unattributed": 0,
+        "checks": [
+          {
+            "check": "lost eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_stored eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_reason:orphan_ttl_expired gt 0",
+            "dest": "soar",
+            "value": 239615,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          }
+        ],
+        "pass": true
+      },
+      "loadgen": {
+        "run_id": "S4b-r1-02e428b1",
+        "rate": 2000,
+        "duration_s": 300,
+        "start_ns": 1792309377348357959,
+        "planned": 600000,
+        "acked": 600000,
+        "by_status": {
+          "200": 600000
+        },
+        "behind_count": 37,
+        "max_dispatch_lag_ms": 26.87616,
+        "inflight_cap_hits": 0,
+        "max_inflight_observed": 121,
+        "retries_configured": 0,
+        "ack_latency_ms": {
+          "count": 600000,
+          "p50": 9.007,
+          "p90": 13.999,
+          "p99": 17.679,
+          "p999": 20.463,
+          "max": 75.583
+        },
+        "achieved_rate": 1999.9961000811047
+      },
+      "timeline": [
+        {
+          "action": "unregister",
+          "dest": "soar",
+          "planned_s": 60,
+          "started_s": 60.000811273,
+          "finished_s": 60.007486012
+        }
+      ],
+      "gateway_starts": 1,
+      "drained": true,
+      "drain_s": 36.291722666
+    },
+    {
+      "rep": 2,
+      "run_id": "S4b-r2-b4b02d99",
+      "dir": "/dev/shm/lgbench/results-full-linux/raw/S4b/rep2",
+      "reconcile": {
+        "scenario": "S4b",
+        "profile": "full",
+        "run_id": "S4b-r2-b4b02d99",
+        "load": {
+          "planned": 600000,
+          "acked": 600000,
+          "by_status": {
+            "200": 600000
+          }
+        },
+        "fault_window_s": [
+          60,
+          300
+        ],
+        "destinations": [
+          {
+            "dest": "archive",
+            "type": "file",
+            "expected": 600000,
+            "received_unique": 600000,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.050996417,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 600000,
+              "p50_ms": 50.343057,
+              "p99_ms": 83.670447,
+              "p999_ms": 89.207304,
+              "max_ms": 99.909558
+            },
+            "latency_baseline": {
+              "n": 120000,
+              "p50_ms": 50.817042,
+              "p99_ms": 84.347,
+              "p999_ms": 89.715173,
+              "max_ms": 94.756851
+            },
+            "latency_during": {
+              "n": 480000,
+              "p50_ms": 50.249005,
+              "p99_ms": 83.444154,
+              "p999_ms": 89.055402,
+              "max_ms": 99.909558
+            }
+          },
+          {
+            "dest": "probe",
+            "type": "webhook",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.009855259,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 27.730598,
+              "p99_ms": 44.721408,
+              "p999_ms": 48.433209,
+              "max_ms": 63.751689
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 28.185078,
+              "p99_ms": 45.040464,
+              "p999_ms": 47.724112,
+              "max_ms": 51.150655
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 27.619762,
+              "p99_ms": 44.606747,
+              "p999_ms": 48.66835,
+              "max_ms": 63.751689
+            }
+          },
+          {
+            "dest": "siem",
+            "type": "sqlite",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.050996417,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 50.208541,
+              "p99_ms": 85.062128,
+              "p999_ms": 91.308339,
+              "max_ms": 104.106776
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 50.438133,
+              "p99_ms": 85.118267,
+              "p999_ms": 90.919046,
+              "max_ms": 96.260614
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 50.142763,
+              "p99_ms": 85.048988,
+              "p999_ms": 91.357703,
+              "max_ms": 104.106776
+            }
+          },
+          {
+            "dest": "soar",
+            "type": "webhook",
+            "expected": 299502,
+            "received_unique": 59907,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 239595,
+            "dlq_reasons": {
+              "orphan_ttl_expired": 239595
+            },
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 59907,
+              "p50_ms": 26.55602,
+              "p99_ms": 43.169525,
+              "p999_ms": 45.958568,
+              "max_ms": 49.405365
+            },
+            "latency_baseline": {
+              "n": 59907,
+              "p50_ms": 26.55602,
+              "p99_ms": 43.169525,
+              "p999_ms": 45.958568,
+              "max_ms": 49.405365
+            }
+          }
+        ],
+        "dlq_unattributed": 0,
+        "checks": [
+          {
+            "check": "lost eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_stored eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_reason:orphan_ttl_expired gt 0",
+            "dest": "soar",
+            "value": 239595,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          }
+        ],
+        "pass": true
+      },
+      "loadgen": {
+        "run_id": "S4b-r2-b4b02d99",
+        "rate": 2000,
+        "duration_s": 300,
+        "start_ns": 1792309733374306156,
+        "planned": 600000,
+        "acked": 600000,
+        "by_status": {
+          "200": 600000
+        },
+        "behind_count": 0,
+        "max_dispatch_lag_ms": 7.850156,
+        "inflight_cap_hits": 0,
+        "max_inflight_observed": 75,
+        "retries_configured": 0,
+        "ack_latency_ms": {
+          "count": 600000,
+          "p50": 9.039,
+          "p90": 14.055,
+          "p99": 17.823,
+          "p999": 20.815,
+          "max": 39.263
+        },
+        "achieved_rate": 2000.0019636452007
+      },
+      "timeline": [
+        {
+          "action": "unregister",
+          "dest": "soar",
+          "planned_s": 60,
+          "started_s": 60.001153656,
+          "finished_s": 60.003814713
+        }
+      ],
+      "gateway_starts": 1,
+      "drained": true,
+      "drain_s": 36.546366363
+    },
+    {
+      "rep": 3,
+      "run_id": "S4b-r3-6eea26b2",
+      "dir": "/dev/shm/lgbench/results-full-linux/raw/S4b/rep3",
+      "reconcile": {
+        "scenario": "S4b",
+        "profile": "full",
+        "run_id": "S4b-r3-6eea26b2",
+        "load": {
+          "planned": 600000,
+          "acked": 600000,
+          "by_status": {
+            "200": 600000
+          }
+        },
+        "fault_window_s": [
+          60,
+          300
+        ],
+        "destinations": [
+          {
+            "dest": "archive",
+            "type": "file",
+            "expected": 600000,
+            "received_unique": 600000,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.000848925,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 600000,
+              "p50_ms": 50.31625,
+              "p99_ms": 83.712309,
+              "p999_ms": 89.382021,
+              "max_ms": 98.357857
+            },
+            "latency_baseline": {
+              "n": 120000,
+              "p50_ms": 50.819605,
+              "p99_ms": 84.469946,
+              "p999_ms": 90.557486,
+              "max_ms": 96.193489
+            },
+            "latency_during": {
+              "n": 480000,
+              "p50_ms": 50.206758,
+              "p99_ms": 83.463219,
+              "p999_ms": 89.125262,
+              "max_ms": 98.357857
+            }
+          },
+          {
+            "dest": "probe",
+            "type": "webhook",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.006212997,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 27.899759,
+              "p99_ms": 44.891585,
+              "p999_ms": 47.965322,
+              "max_ms": 59.97701
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 28.188117,
+              "p99_ms": 45.357638,
+              "p999_ms": 48.407854,
+              "max_ms": 59.97701
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 27.825307,
+              "p99_ms": 44.736984,
+              "p999_ms": 47.877009,
+              "max_ms": 51.964197
+            }
+          },
+          {
+            "dest": "siem",
+            "type": "sqlite",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.05142194,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 50.355782,
+              "p99_ms": 85.389383,
+              "p999_ms": 91.559785,
+              "max_ms": 98.458086
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 49.810163,
+              "p99_ms": 84.891713,
+              "p999_ms": 91.00001,
+              "max_ms": 95.811932
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 50.513862,
+              "p99_ms": 85.568967,
+              "p999_ms": 91.677347,
+              "max_ms": 98.458086
+            }
+          },
+          {
+            "dest": "soar",
+            "type": "webhook",
+            "expected": 299502,
+            "received_unique": 59900,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 239602,
+            "dlq_reasons": {
+              "orphan_ttl_expired": 239602
+            },
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 59900,
+              "p50_ms": 26.607214,
+              "p99_ms": 43.209558,
+              "p999_ms": 46.434503,
+              "max_ms": 49.579496
+            },
+            "latency_baseline": {
+              "n": 59900,
+              "p50_ms": 26.607214,
+              "p99_ms": 43.209558,
+              "p999_ms": 46.434503,
+              "max_ms": 49.579496
+            }
+          }
+        ],
+        "dlq_unattributed": 0,
+        "checks": [
+          {
+            "check": "lost eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_stored eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_reason:orphan_ttl_expired gt 0",
+            "dest": "soar",
+            "value": 239602,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          }
+        ],
+        "pass": true
+      },
+      "loadgen": {
+        "run_id": "S4b-r3-6eea26b2",
+        "rate": 2000,
+        "duration_s": 300,
+        "start_ns": 1792310090557003915,
+        "planned": 600000,
+        "acked": 600000,
+        "by_status": {
+          "200": 600000
+        },
+        "behind_count": 0,
+        "max_dispatch_lag_ms": 4.204395,
+        "inflight_cap_hits": 0,
+        "max_inflight_observed": 47,
+        "retries_configured": 0,
+        "ack_latency_ms": {
+          "count": 600000,
+          "p50": 9.119,
+          "p90": 14.183,
+          "p99": 17.935,
+          "p999": 20.367,
+          "max": 24.879
+        },
+        "achieved_rate": 2000.0027195882308
+      },
+      "timeline": [
+        {
+          "action": "unregister",
+          "dest": "soar",
+          "planned_s": 60,
+          "started_s": 60.000360129,
+          "finished_s": 60.001711434
+        }
+      ],
+      "gateway_starts": 1,
+      "drained": true,
+      "drain_s": 36.5599881
+    },
+    {
+      "rep": 4,
+      "run_id": "S4b-r4-10553958",
+      "dir": "/dev/shm/lgbench/results-full-linux/raw/S4b/rep4",
+      "reconcile": {
+        "scenario": "S4b",
+        "profile": "full",
+        "run_id": "S4b-r4-10553958",
+        "load": {
+          "planned": 600000,
+          "acked": 600000,
+          "by_status": {
+            "200": 600000
+          }
+        },
+        "fault_window_s": [
+          60,
+          300
+        ],
+        "destinations": [
+          {
+            "dest": "archive",
+            "type": "file",
+            "expected": 600000,
+            "received_unique": 600000,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.051241032,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 600000,
+              "p50_ms": 50.277484,
+              "p99_ms": 83.746949,
+              "p999_ms": 89.273157,
+              "max_ms": 116.979016
+            },
+            "latency_baseline": {
+              "n": 120000,
+              "p50_ms": 50.941672,
+              "p99_ms": 84.795977,
+              "p999_ms": 91.320731,
+              "max_ms": 116.979016
+            },
+            "latency_during": {
+              "n": 480000,
+              "p50_ms": 50.132972,
+              "p99_ms": 83.460267,
+              "p999_ms": 88.716995,
+              "max_ms": 96.338257
+            }
+          },
+          {
+            "dest": "probe",
+            "type": "webhook",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.004731614,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 27.603725,
+              "p99_ms": 44.812865,
+              "p999_ms": 49.729941,
+              "max_ms": 70.846845
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 28.063245,
+              "p99_ms": 46.519399,
+              "p999_ms": 56.346845,
+              "max_ms": 70.846845
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 27.492245,
+              "p99_ms": 44.30006,
+              "p999_ms": 47.837218,
+              "max_ms": 68.725752
+            }
+          },
+          {
+            "dest": "siem",
+            "type": "sqlite",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.051241032,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 49.897901,
+              "p99_ms": 84.797491,
+              "p999_ms": 90.811898,
+              "max_ms": 118.174296
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 49.840533,
+              "p99_ms": 85.286837,
+              "p999_ms": 92.330846,
+              "max_ms": 118.174296
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 49.915196,
+              "p99_ms": 84.725577,
+              "p999_ms": 90.547358,
+              "max_ms": 103.090659
+            }
+          },
+          {
+            "dest": "soar",
+            "type": "webhook",
+            "expected": 299502,
+            "received_unique": 59882,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 239620,
+            "dlq_reasons": {
+              "orphan_ttl_expired": 239620
+            },
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 59882,
+              "p50_ms": 26.669547,
+              "p99_ms": 44.317508,
+              "p999_ms": 51.97949,
+              "max_ms": 63.302733
+            },
+            "latency_baseline": {
+              "n": 59882,
+              "p50_ms": 26.669547,
+              "p99_ms": 44.317508,
+              "p999_ms": 51.97949,
+              "max_ms": 63.302733
+            }
+          }
+        ],
+        "dlq_unattributed": 0,
+        "checks": [
+          {
+            "check": "lost eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_stored eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_reason:orphan_ttl_expired gt 0",
+            "dest": "soar",
+            "value": 239620,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          }
+        ],
+        "pass": true
+      },
+      "loadgen": {
+        "run_id": "S4b-r4-10553958",
+        "rate": 2000,
+        "duration_s": 300,
+        "start_ns": 1792310448525126702,
+        "planned": 600000,
+        "acked": 600000,
+        "by_status": {
+          "200": 600000
+        },
+        "behind_count": 4,
+        "max_dispatch_lag_ms": 11.760192,
+        "inflight_cap_hits": 0,
+        "max_inflight_observed": 78,
+        "retries_configured": 0,
+        "ack_latency_ms": {
+          "count": 600000,
+          "p50": 8.983,
+          "p90": 13.959,
+          "p99": 17.711,
+          "p999": 20.959,
+          "max": 40.543
+        },
+        "achieved_rate": 2000.001162042612
+      },
+      "timeline": [
+        {
+          "action": "unregister",
+          "dest": "soar",
+          "planned_s": 60,
+          "started_s": 60.000061733,
+          "finished_s": 60.001255258
+        }
+      ],
+      "gateway_starts": 1,
+      "drained": true,
+      "drain_s": 36.038471083
+    },
+    {
+      "rep": 5,
+      "run_id": "S4b-r5-c286a5fb",
+      "dir": "/dev/shm/lgbench/results-full-linux/raw/S4b/rep5",
+      "reconcile": {
+        "scenario": "S4b",
+        "profile": "full",
+        "run_id": "S4b-r5-c286a5fb",
+        "load": {
+          "planned": 600000,
+          "acked": 600000,
+          "by_status": {
+            "200": 600000
+          }
+        },
+        "fault_window_s": [
+          60,
+          300
+        ],
+        "destinations": [
+          {
+            "dest": "archive",
+            "type": "file",
+            "expected": 600000,
+            "received_unique": 600000,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.050389213,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 600000,
+              "p50_ms": 50.257405,
+              "p99_ms": 83.602201,
+              "p999_ms": 89.079798,
+              "max_ms": 109.93119
+            },
+            "latency_baseline": {
+              "n": 120000,
+              "p50_ms": 50.694315,
+              "p99_ms": 84.355791,
+              "p999_ms": 90.198874,
+              "max_ms": 96.722144
+            },
+            "latency_during": {
+              "n": 480000,
+              "p50_ms": 50.17887,
+              "p99_ms": 83.374119,
+              "p999_ms": 88.733718,
+              "max_ms": 109.93119
+            }
+          },
+          {
+            "dest": "probe",
+            "type": "webhook",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.01309378,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 27.728248,
+              "p99_ms": 44.541916,
+              "p999_ms": 47.850705,
+              "max_ms": 71.154691
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 28.183272,
+              "p99_ms": 45.316019,
+              "p999_ms": 48.135427,
+              "max_ms": 53.377334
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 27.618773,
+              "p99_ms": 44.295409,
+              "p999_ms": 47.741312,
+              "max_ms": 71.154691
+            }
+          },
+          {
+            "dest": "siem",
+            "type": "sqlite",
+            "expected": 479917,
+            "received_unique": 479917,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 0,
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0.050389213,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 479917,
+              "p50_ms": 50.103136,
+              "p99_ms": 85.144142,
+              "p999_ms": 91.144142,
+              "max_ms": 109.93119
+            },
+            "latency_baseline": {
+              "n": 95983,
+              "p50_ms": 49.908915,
+              "p99_ms": 84.78087,
+              "p999_ms": 90.516316,
+              "max_ms": 97.169758
+            },
+            "latency_during": {
+              "n": 383934,
+              "p50_ms": 50.146082,
+              "p99_ms": 85.208255,
+              "p999_ms": 91.255461,
+              "max_ms": 109.93119
+            }
+          },
+          {
+            "dest": "soar",
+            "type": "webhook",
+            "expected": 299502,
+            "received_unique": 59882,
+            "lost": 0,
+            "dup_raw": 0,
+            "dup_stored": 0,
+            "dlq": 239620,
+            "dlq_reasons": {
+              "orphan_ttl_expired": 239620
+            },
+            "dlq_and_delivered": 0,
+            "extra": 0,
+            "misrouted": 0,
+            "unknown": 0,
+            "rejected": 0,
+            "torn": 0,
+            "recovery_s": 0,
+            "arrival_times_known": true,
+            "latency_all": {
+              "n": 59882,
+              "p50_ms": 26.7459,
+              "p99_ms": 43.381102,
+              "p999_ms": 46.480175,
+              "max_ms": 51.533656
+            },
+            "latency_baseline": {
+              "n": 59882,
+              "p50_ms": 26.7459,
+              "p99_ms": 43.381102,
+              "p999_ms": 46.480175,
+              "max_ms": 51.533656
+            }
+          }
+        ],
+        "dlq_unattributed": 0,
+        "checks": [
+          {
+            "check": "lost eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "lost eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "misrouted eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_and_delivered eq 0",
+            "dest": "soar",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_stored eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dup_raw eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq_reason:orphan_ttl_expired gt 0",
+            "dest": "soar",
+            "value": 239620,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "archive",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "siem",
+            "value": 0,
+            "pass": true
+          },
+          {
+            "check": "dlq eq 0",
+            "dest": "probe",
+            "value": 0,
+            "pass": true
+          }
+        ],
+        "pass": true
+      },
+      "loadgen": {
+        "run_id": "S4b-r5-c286a5fb",
+        "rate": 2000,
+        "duration_s": 300,
+        "start_ns": 1792310804296269884,
+        "planned": 600000,
+        "acked": 600000,
+        "by_status": {
+          "200": 600000
+        },
+        "behind_count": 0,
+        "max_dispatch_lag_ms": 9.50538,
+        "inflight_cap_hits": 0,
+        "max_inflight_observed": 77,
+        "retries_configured": 0,
+        "ack_latency_ms": {
+          "count": 600000,
+          "p50": 9.007,
+          "p90": 14.007,
+          "p99": 17.663,
+          "p999": 20.303,
+          "max": 44.863
+        },
+        "achieved_rate": 1999.9956452688905
+      },
+      "timeline": [
+        {
+          "action": "unregister",
+          "dest": "soar",
+          "planned_s": 60,
+          "started_s": 60.001044033,
+          "finished_s": 60.003843568
+        }
+      ],
+      "gateway_starts": 1,
+      "drained": true,
+      "drain_s": 36.292232984
+    }
+  ],
+  "summary": {
+    "archive": {
+      "dlq": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "dup_raw": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "dup_stored": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "expected": {
+        "n": 5,
+        "mean": 600000,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 600000,
+        "max": 600000,
+        "has_ci": true,
+        "values": [
+          600000,
+          600000,
+          600000,
+          600000,
+          600000
+        ]
+      },
+      "extra": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "lost": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "misrouted": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "p99_baseline_ms": {
+        "n": 5,
+        "mean": 84.3656788,
+        "sd": 0.33634418445945957,
+        "ci95_half": 0.41755951315194195,
+        "min": 83.85968,
+        "max": 84.795977,
+        "has_ci": true,
+        "values": [
+          83.85968,
+          84.347,
+          84.469946,
+          84.795977,
+          84.355791
+        ]
+      },
+      "p99_during_ms": {
+        "n": 5,
+        "mean": 83.42213039999999,
+        "sd": 0.04681620327194498,
+        "ci95_half": 0.05812067503789987,
+        "min": 83.368893,
+        "max": 83.463219,
+        "has_ci": true,
+        "values": [
+          83.368893,
+          83.444154,
+          83.463219,
+          83.460267,
+          83.374119
+        ]
+      },
+      "recovery_s": {
+        "n": 5,
+        "mean": 0.0409591326,
+        "sd": 0.0224252583686441,
+        "ci95_half": 0.02784017205995781,
+        "min": 0.000848925,
+        "max": 0.051320076,
+        "has_ci": true,
+        "values": [
+          0.051320076,
+          0.050996417,
+          0.000848925,
+          0.051241032,
+          0.050389213
+        ]
+      }
+    },
+    "probe": {
+      "dlq": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "dup_raw": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "dup_stored": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "expected": {
+        "n": 5,
+        "mean": 479917,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 479917,
+        "max": 479917,
+        "has_ci": true,
+        "values": [
+          479917,
+          479917,
+          479917,
+          479917,
+          479917
+        ]
+      },
+      "extra": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "lost": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "misrouted": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "p99_baseline_ms": {
+        "n": 5,
+        "mean": 45.5129472,
+        "sd": 0.5770861054944058,
+        "ci95_half": 0.7164321679717901,
+        "min": 45.040464,
+        "max": 46.519399,
+        "has_ci": true,
+        "values": [
+          45.331216,
+          45.040464,
+          45.357638,
+          46.519399,
+          45.316019
+        ]
+      },
+      "p99_during_ms": {
+        "n": 5,
+        "mean": 44.46523620000001,
+        "sd": 0.1975604366736918,
+        "ci95_half": 0.24526435588035247,
+        "min": 44.295409,
+        "max": 44.736984,
+        "has_ci": true,
+        "values": [
+          44.386981,
+          44.606747,
+          44.736984,
+          44.30006,
+          44.295409
+        ]
+      },
+      "recovery_s": {
+        "n": 5,
+        "mean": 0.0077005124,
+        "sd": 0.0036849464420619874,
+        "ci95_half": 0.004574731817680189,
+        "min": 0.004608912,
+        "max": 0.01309378,
+        "has_ci": true,
+        "values": [
+          0.004608912,
+          0.009855259,
+          0.006212997,
+          0.004731614,
+          0.01309378
+        ]
+      }
+    },
+    "siem": {
+      "dlq": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "dup_raw": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "dup_stored": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "expected": {
+        "n": 5,
+        "mean": 479917,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 479917,
+        "max": 479917,
+        "has_ci": true,
+        "values": [
+          479917,
+          479917,
+          479917,
+          479917,
+          479917
+        ]
+      },
+      "extra": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "lost": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "misrouted": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "p99_baseline_ms": {
+        "n": 5,
+        "mean": 84.99784659999999,
+        "sd": 0.20236569841823962,
+        "ci95_half": 0.25122991986905546,
+        "min": 84.78087,
+        "max": 85.286837,
+        "has_ci": true,
+        "values": [
+          84.911546,
+          85.118267,
+          84.891713,
+          85.286837,
+          84.78087
+        ]
+      },
+      "p99_during_ms": {
+        "n": 5,
+        "mean": 85.1628224,
+        "sd": 0.308650342257708,
+        "ci95_half": 0.3831785789738934,
+        "min": 84.725577,
+        "max": 85.568967,
+        "has_ci": true,
+        "values": [
+          85.262325,
+          85.048988,
+          85.568967,
+          84.725577,
+          85.208255
+        ]
+      },
+      "recovery_s": {
+        "n": 5,
+        "mean": 0.0510737356,
+        "sd": 0.0004136627062357675,
+        "ci95_half": 0.0005135477472355146,
+        "min": 0.050389213,
+        "max": 0.05142194,
+        "has_ci": true,
+        "values": [
+          0.051320076,
+          0.050996417,
+          0.05142194,
+          0.051241032,
+          0.050389213
+        ]
+      }
+    },
+    "soar": {
+      "dlq": {
+        "n": 5,
+        "mean": 239610.4,
+        "sd": 11.326958991715296,
+        "ci95_half": 14.062022477581236,
+        "min": 239595,
+        "max": 239620,
+        "has_ci": true,
+        "values": [
+          239615,
+          239595,
+          239602,
+          239620,
+          239620
+        ]
+      },
+      "dup_raw": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "dup_stored": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "expected": {
+        "n": 5,
+        "mean": 299502,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 299502,
+        "max": 299502,
+        "has_ci": true,
+        "values": [
+          299502,
+          299502,
+          299502,
+          299502,
+          299502
+        ]
+      },
+      "extra": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "lost": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "misrouted": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "p99_baseline_ms": {
+        "n": 5,
+        "mean": 43.436672800000004,
+        "sd": 0.5028593328155482,
+        "ci95_half": 0.6242822319994039,
+        "min": 43.105671,
+        "max": 44.317508,
+        "has_ci": true,
+        "values": [
+          43.105671,
+          43.169525,
+          43.209558,
+          44.317508,
+          43.381102
+        ]
+      },
+      "recovery_s": {
+        "n": 5,
+        "mean": 0,
+        "sd": 0,
+        "ci95_half": 0,
+        "min": 0,
+        "max": 0,
+        "has_ci": true,
+        "values": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  },
+  "pass_all": true,
+  "environment": {
+    "profile": "full",
+    "os": "linux",
+    "arch": "amd64",
+    "os_version": "Linux 5.15.0-92-generic",
+    "cpu": "Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz",
+    "num_cpu": 32,
+    "go_version": "go1.27.0",
+    "git_commit": "29bff0e85ee5",
+    "git_dirty": false,
+    "started_at": "2026-10-18T14:03:53+09:00",
+    "notes": [
+      "kill = SIGKILL; graceful stop = SIGTERM. kill -9 is not power loss (page cache survives)."
+    ]
+  }
+}
