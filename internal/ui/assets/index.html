@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LogGate 控制台</title>
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232563eb'/%3E%3Cpath d='M4 4v8h8' stroke='white' stroke-width='2' fill='none'/%3E%3C/svg%3E">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">LG</span>
+    <div>
+      <h1><span id="title-zh">安全日志网关 · 运行面板</span></h1>
+      <p class="sub" id="title-en">LogGate · Operations dashboard</p>
+    </div>
+  </div>
+  <div class="top-right">
+    <span class="badge badge-demo hidden" id="demo-badge" title="All events are generated synthetically">演示 · 合成数据 <small>DEMO · synthetic data</small></span>
+    <span class="pill" id="status-pill"><span class="dot"></span><span id="status-text">连接中 Connecting</span></span>
+    <button class="icon-btn" id="theme-btn" type="button" title="切换主题 Toggle theme" aria-label="Toggle theme">◐</button>
+  </div>
+</header>
+
+<main>
+  <section class="kpis" aria-label="Counters">
+    <div class="kpi"><div class="k-label">已接收<small>Ingested</small></div><div class="k-val" id="k-ingested">–</div><div class="k-foot" id="k-ingested-foot"></div></div>
+    <div class="kpi"><div class="k-label">已确认<small>Acked (WAL fsynced)</small></div><div class="k-val" id="k-acked">–</div><div class="k-foot" id="k-acked-foot"></div></div>
+    <div class="kpi"><div class="k-label">已投递<small>Delivered</small></div><div class="k-val" id="k-delivered">–</div><div class="k-foot" id="k-delivered-foot"></div></div>
+    <div class="kpi"><div class="k-label">L1 暂存<small>L1 pending</small></div><div class="k-val" id="k-l1">–</div><div class="k-foot" id="k-l1-foot"></div></div>
+    <div class="kpi"><div class="k-label">死信<small>DLQ</small></div><div class="k-val" id="k-dlq">–</div><div class="k-foot">不算丢失 · accounted, not lost</div></div>
+    <div class="kpi"><div class="k-label">反压<small>Backpressure</small></div><div class="k-val" id="k-bp">–</div><div class="k-foot" id="k-bp-foot"></div></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div><h2>目的地 <small>Destinations</small></h2>
+      <p class="hint">每个目的地独立 L2 队列与熔断器；失败只影响自己 · Per-destination L2 queue and breaker — a failure only affects its own destination</p></div>
+      <div class="head-actions demo-only hidden">
+        <button class="btn btn-danger" id="crash-btn" type="button" title="Gateway.Crash(): drop in-memory state without graceful shutdown, then reopen from disk">模拟崩溃 <small>Simulate crash</small></button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="grid" id="dest-table">
+        <thead><tr>
+          <th>目的地<small>Destination</small></th>
+          <th>生命周期<small>Lifecycle</small></th>
+          <th>熔断<small>Breaker</small></th>
+          <th class="num">L2<small>queue</small></th>
+          <th class="num">L1 暂存<small>pending</small></th>
+          <th class="num">p99 延迟<small>e2e, 30s</small></th>
+          <th>最近错误<small>Last error</small></th>
+          <th class="num">已投递<small>Delivered</small></th>
+          <th class="demo-only hidden">操作<small>Actions</small></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="chart-box">
+      <div class="chart-head"><span>L1 暂存趋势 <small>L1 pending, last 2 min</small></span><span class="legend" id="chart-legend"></span></div>
+      <svg id="l1-chart" viewBox="0 0 800 140" preserveAspectRatio="none" role="img" aria-label="L1 pending trend"></svg>
+    </div>
+  </section>
+
+  <div class="two-col demo-only hidden">
+    <section class="card">
+      <div class="card-head"><div><h2>实时对账 <small>Live reconciliation</small></h2>
+      <p class="hint">负载端已确认集合 vs 各接收端实际收到 · Load generator's acked set vs what each receiver actually holds</p></div></div>
+      <div class="table-wrap">
+        <table class="grid" id="recon-table">
+          <thead><tr>
+            <th>目的地<small>Dest</small></th>
+            <th class="num">应达<small>Expected</small></th>
+            <th class="num">已收<small>Received</small></th>
+            <th class="num">未达<small>Outstanding</small></th>
+            <th class="num">重复<small>Dup raw / stored</small></th>
+            <th class="num">死信<small>DLQ</small></th>
+            <th class="num">误投<small>Misrouted</small></th>
+            <th class="num">丢失<small>Lost</small></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="hint small">丢失 = 网关水位以下、既未送达也不在死信中的事件；目的地仍有 L1 积压时显示"收敛中"。file sink 非幂等，崩溃重放产生的原始重复属预期；sqlite 按 idem_key 去重。<br>
+      Lost = events at or below the gateway watermark that are neither received nor in the DLQ; shown as "settling" while the destination has an L1 backlog. The file sink is not idempotent, so raw duplicates after a crash replay are expected; sqlite dedups by idem_key.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><div><h2>操作记录 <small>Action log</small></h2>
+      <p class="hint" id="load-line"></p></div></div>
+      <ul class="log" id="action-log"></ul>
+    </section>
+  </div>
+
+  <section class="card demo-only hidden">
+    <div class="card-head"><div><h2>脱敏样例 <small>Masking — last 20 events</small></h2>
+      <p class="hint">仅展示脱敏后的内容，原文从不落盘、不展示 · Post-masking content only; originals are never stored or shown</p></div>
+      <div class="chips" id="mask-hits"></div>
+    </div>
+    <ol class="masked" id="masked-list"></ol>
+  </section>
+</main>
+
+<footer class="foot"><span id="foot-left">LogGate</span><span id="foot-right"></span></footer>
+<div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>
