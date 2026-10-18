@@ -1,4 +1,4 @@
-# 实现说明（M2、M3、M4）
+# 实现说明（M2–M5）
 
 本文记录 M2、M3 实现与 `DESIGN.md`（含 §0.5 v0.2 修订）的偏差、补充的细节和原因，以及已知缺口。没有列出的部分按设计实现。
 
@@ -57,11 +57,11 @@
 
 ## 4. 已知缺口
 
-1. 没有 Prometheus 指标和 `loggatectl`，留到 M5。（M3 已补最小 HTTP admin API，见 §7-7。）
+1. ~~没有 Prometheus 指标~~（M5 已做，见 §13）；没有 `loggatectl` / gRPC（§0.5 不在 v1 范围）。（M3 已补最小 HTTP admin API，见 §7-7。）
 2. 没有 ENOSPC 只读模式。（M3 已补最小磁盘配额，DLQ 计入，见 §7-8。）
 3. sweeper 每轮全量扫描 `l1` bucket，复杂度 O(L1 记录数)；L1 很大时应改为按 `ReceivedAt`/`FirstAt` 建二级索引。
 4. bbolt 文件不会收缩；长时间故障后 `state.db` 保持高水位（REVIEW 已指出 soak 只看 WAL 段数）。
-5. L1 提交失败（bbolt 错误）时，对应 seq 保持未解决，水位卡住、GC 停止，直到重启后重放；目前只记日志，没有告警指标。
+5. L1 提交失败（bbolt 错误）时，对应 seq 保持未解决，水位卡住、GC 停止，直到重启后重放；目前只记日志。M5 起可以从 `loggate_watermark` 停止增长间接发现，没有专门的告警指标。
 6. `/v1/stats` 里的 DLQ 计数只统计本进程写入的条目。
 7. redeliver 读不到 WAL 记录时（理论上不应发生，segRef 会钉住段）会按 `retry.max` 推迟，最终由 sweeper 在 `max_age` 时转 DLQ（body 记为 null）。
 8. 只在 Windows 上跑过；race detector 未运行（见 §2）。
@@ -185,3 +185,55 @@ ingest（HTTP JSON 或 `text/plain` 按行）→ `normalize.JSON / normalize.Tex
 5. 泄露面：panic 栈、core dump、swap 不在进程控制范围内；`masking.disabled` 时 WAL 存原文。
 6. 吞吐数字来自 Windows 笔记本的单 goroutine 基准，未做 CPU 隔离；端到端（含 WAL fsync）的"脱敏开/关"对照在 M6 的性能矩阵里做。
 7. syslog TCP 输入未实现。
+
+# M5：Prometheus 指标、演示模式、Web 控制台
+
+## 13. 组成
+
+| 组件 | 位置 | 说明 |
+|---|---|---|
+| 指标 | `internal/metrics` | 私有 `prometheus.Registry`（另注册 Go / process collector）。事件类：`IngestEvents`、`WALFsync`、`Delivered`、`DeliveryError`、`DLQ`，由 gateway 接到 httpingest `OnResult`、`wal.Options.OnFsync`、`worker.Deps.Observer`、`dlq.Log.SetOnAppend`。状态类：自定义 collector 在抓取时调用 `Source`（`Gateway.MetricsSnapshot`），网关未运行时不输出这些 gauge |
+| 控制台 | `internal/ui` | `go:embed assets`（index.html / app.js / app.css，无外部资源、无内联脚本，CSP `default-src 'self'`）；`GET /ui/api/snapshot`、`GET /ui/api/stream`（SSE，`event: snapshot`，默认 1s）；`ui.FromGateway` 由网关 Stats + 指标视图构建快照 |
+| 演示 | `internal/demo` | `Runner`：模拟 SOAR 接收端（`down` 关闭监听、`slow` 先睡再收）、合成负载、对账、脱敏样例环形缓冲、操作记录、`/demo/*` 处理器 |
+| 主程序 | `cmd/loggate` | 普通模式按配置起 metrics / ui 监听；`--demo` 忽略 `-config`，使用内置演示配置，全部只绑定 127.0.0.1 |
+
+## 14. 与设计的偏差和补充
+
+| # | 设计 / 任务 | 实现 | 原因 |
+|---|---|---|---|
+| 1 | §8 指标名 | 统一加 `loggate_` 前缀；breaker / plugin 状态用数值编码（含义写在 HELP）；另加 `loggate_watermark{dest}`、`loggate_route_level_blocked_total{dest}` | 任务列表；数值 gauge 便于告警表达式 |
+| 2 | `ingest_events_total{source,result}` | accepted / wal_error 按事件数计；在解析请求体之前就决定的结果（backpressure / unauthorized / bad_request / too_large / draining）按请求计 1；无有效 token 的 source 记为 `unauthenticated` | 这些结果下不知道事件数，读请求体只为计数不值得；客户端不能自报 source，所以基数受 token 配置限制 |
+| 3 | 标签基数 | 每个标签一个限流器：首见的前 N 个值原样保留（dest 64、source 64、reason 32、type 16、kind / origin / result 各 8–16），之后的值记为 `other` | dest 本就受 registry 64 个上限约束；限流器是兜底，防止代码以后引入不受控的值 |
+| 4 | e2e 延迟 | `now − ReceivedAt`，在 sink 确认时记录，含 L1 暂存和重放时间。控制台 p99 用每目的地最近 4096 个样本中 30s 窗口内的精确分位数，不从直方图桶估算 | 网关自报的延迟只用于运维观察；基准仍以独立 mocksink 测量为准（§0.5 item 12） |
+| 5 | mask_hits、route_level_blocked、backpressure 等 | 从网关的累计计数器抓取时读出，作为 counter 输出；模拟崩溃 / 重启后从 0 开始（Prometheus 按计数器重置处理） | 计数器本来就在 mask.Engine / route.Table 里，不重复维护 |
+| 6 | §16 demo "kill -9 后重启" | 控制台按钮是**进程内模拟**：`Gateway.Crash()`（原 `crash()` 导出）丢弃未提交的 L1 操作、L2、在途结果，不写最终 checkpoint，WAL 句柄正常关闭；随后用同一配置和数据目录 `New + Start` | 演示进程同时托管接收端、负载和对账，真正 kill 掉就没有观察者了；真实 kill -9 在 faultbench S3 |
+| 7 | §16 "脱敏前后对比" | 只展示**脱敏后**的事件（§0.5 item 11 已改）；数据来自 httpingest `OnAccepted`，在 WAL append 成功之后调用，只在演示模式设置 | 不保留原文；append 返回后 encoder 已完成，读事件不会与 WAL writer 竞争 |
+| 8 | §16 "Replace v2" 按钮 | 没有（v1 不做 Replace），改为 Unregister / Register | §0.5 item 5 |
+| 9 | 演示对账 | 按网关 seq 对账：负载端每个请求一条事件，收到 200 时记下 `first_seq` 和预期目的地（预期路由由生成器根据自己生成的内容独立计算：认证类 → 三个目的地，其他 → archive + siem；同时含身份证和银行卡 → 分级"重要"，不投 soar）。接收端：soar 记录每个 seq 的副本数和 idem_key；archive 增量读文件；siem 增量查 `rowid > ?`；DLQ 读目录 | sshd 文本行无法携带 test_seq；seq 对账足以展示 lost / dup。faultbench 仍使用独立的 test_seq oracle |
+| 10 | lost 的判定时机 | 先读网关每目的地水位 W 和 L1 pending（同一次 Stats，水位先读），再轮询接收端；只有 L1 pending = 0 时才判定 `lost = 预期中 ≤ W、未送达、不在 DLQ 的事件数`，否则显示"收敛中" | W 以下的事件要么已被 sink 确认，要么在 L1 / DLQ。L1 为空时，W 以下未送达且不在 DLQ 的事件就是真丢失；轮询在读 W 之后进行，不会因为观测滞后而误报 |
+| 11 | 演示端点保护 | 只接受回环来源 + 回环 Host（防 DNS rebinding）+ `X-LogGate-Demo: 1` 头（自定义头会触发 CORS 预检，服务端不应答预检，其他网页无法调用）+ JSON 请求体；只在 `--demo` 时挂载 | 任务要求"仅本机或 token 保护"；本机即可满足，不再引入额外 token |
+| 12 | 演示参数 | 退避 100ms–2s、熔断 3 次 / 3s、`max_attempts` 100000、`orphan_ttl` 10m、WAL 段 4MiB | 让故障和恢复在几秒内可见，演示中不会因预算耗尽进入 DLQ |
+| 13 | 演示目录 | 默认新建临时目录，退出时删除；`-demo-dir` 指向已有 `data/` 的目录会拒绝启动 | 对账状态只在内存中；旧数据重放会产生负载端没见过的事件 |
+| 14 | 默认监听 | 配置默认 `admin.metrics: ":9091"`、`admin.ui: ":8081"`（DESIGN §9）；示例配置改为绑定 127.0.0.1；faultbench 生成的配置用 `metrics: 127.0.0.1:0`、`ui: off` | 控制台只读，但非演示模式也不展示事件内容；基准运行不应占用开发者常用端口 |
+
+## 15. 本机演示走查（Windows，50 eps）
+
+按 `docs/DEMO.md` 的顺序在浏览器里操作：
+- 正常流量：三个目的地 p99 约 27ms，对账 lost=0。
+- soar 停止约 25s：熔断断开，最近错误显示 retryable，soar 的 L1 涨到 400 条以上；archive / siem 照常投递，p99 不变；soar 对账显示"收敛中"。
+- 恢复：8s 内 L1 回到 0，soar 的 lost=0、dup=0；这段时间 soar 的 30s 窗口 p99 约 21s，就是停机时长。
+- 模拟崩溃：9ms 内完成重启，重放 38 条 WAL 记录。archive（file）原始重复 37；siem 存储重复 0；soar 原始重复 26，但没有新的 idem_key，存储重复为 0；三个目的地 lost 都是 0。崩溃瞬间有 1 个请求失败（`wal_error`，客户端看到 EOF），没有 ack，因此不在期望集合里。
+- 崩溃后约 30s 内，archive / siem 的控制台 p99 升到约 475ms。原因是被重放事件的 e2e 延迟从原始 `received_at` 起算，并不是变慢；窗口滑过后回到约 27ms。
+- soar 慢 500ms：soar 的 p99 约 1s，archive / siem 保持约 27ms，没有被拖慢。
+- 注销 soar 后，事件 Park 到 L1（143 条）；重新注册后 5s 内投递完，lost=0。
+- 窄屏（375px）无横向滚动；亮色和暗色主题都检查过。
+
+## 16. 已知缺口（M5）
+
+1. 没有 gRPC admin / `loggatectl` / Replace（§0.5 v1 范围之外）。
+2. 指标端点没有认证。默认 `:9091` 监听所有网卡（按 DESIGN §9），部署时应绑定内网地址或由反向代理保护。普通模式下的控制台也没有认证，但只读，不展示事件内容。
+3. 状态类计数器（mask_hits、route_level_blocked）和 `/v1/stats` 一样只统计当前网关实例；演示中模拟崩溃后会重置，但 `delivered_total` 等事件类指标跨重启累计。
+4. 演示对账依赖网关返回的 `first_seq`，不如 faultbench 的 test_seq oracle 独立；演示 lost=0 只是展示，正式数字以 faultbench 为准。
+5. 演示负载按顺序发送：请求变慢时 ticker 会丢 tick，实际速率可能低于设定值（控制台显示实测 eps）。
+6. `Store.Count()`（`l1_records`）每次抓取都会遍历 L1 bucket；L1 很大时抓取和控制台刷新的开销随之增加。
+7. 控制台在 Windows 的内置浏览器中检查过；其他浏览器只依赖标准的 EventSource / fetch / SVG，未逐一测试。

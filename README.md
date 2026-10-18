@@ -2,9 +2,9 @@
 
 LogGate 是一个用 Go 编写的单机安全日志采集网关。它的目标是：已经 ack 的日志不丢；某个目的地失败时，只重投这个目的地；借助幂等键，在幂等 sink 上做到 effectively-once。丢失和重复用一套可复现的故障注入基准来量化。
 
-设计见 [docs/DESIGN.md](docs/DESIGN.md)（§0.5 的 v0.2 修订优先于正文），红队评审见 [docs/REVIEW_01_红队评审.md](docs/REVIEW_01_红队评审.md)，实现与设计的偏差见 [docs/IMPLEMENTATION_NOTES.md](docs/IMPLEMENTATION_NOTES.md)。
+设计见 [docs/DESIGN.md](docs/DESIGN.md)（§0.5 的 v0.2 修订优先于正文），3 分钟演示脚本见 [docs/DEMO.md](docs/DEMO.md)，红队评审见 [docs/REVIEW_01_红队评审.md](docs/REVIEW_01_红队评审.md)，实现与设计的偏差见 [docs/IMPLEMENTATION_NOTES.md](docs/IMPLEMENTATION_NOTES.md)。
 
-## 当前状态：M4（OCSF 归一化 + PII 脱敏 + 分级路由 + 合成标注评测）
+## 当前状态：M5（Prometheus 指标 + 演示模式 + Web 控制台）
 
 ### M1（已完成）
 - **WAL**：分段追加、CRC32C、单 writer 分配 Seq、组提交 fsync；fsync 成功后才 ack；打开时截断撕裂尾部；write/fsync 出错时毒段 + 滚段，本批不 ack。
@@ -35,7 +35,7 @@ LogGate 是一个用 Go 编写的单机安全日志采集网关。它的目标�
 - **场景**（`bench/scenarios/`）：S0 基线、S1 sink 宕机、S2 慢 sink、S2b 超过超时、S3 kill -9（3 个周期）、S3b 优雅重启、S4b 注销 → 孤儿 TTL → DLQ、S5 磁盘满（仅 Linux）、S6 10% 不可重试错误。拓扑为 archive(file)、siem(sqlite)、soar(webhook → mocksink)，另加始终健康的 probe(webhook → mocksink) 用来在独立接收方测健康 sink 的延迟。
 - **网关新增**：token 保护的 admin API（`POST /v1/admin/{shutdown,unregister,register}`，Windows 上优雅停止靠它）；最小磁盘配额（`disk.max_bytes`，统计 WAL + state.db + DLQ，超出返回 429）；file sink 启动时补齐被 kill 截断的半行。
 
-### M4（本次）
+### M4（已完成）
 - **OCSF 归一化**（`internal/normalize`，OCSF 1.3.0 子集）：sshd 的 `Accepted|Failed <method> for [invalid user ]U from IP port P ssh2`、`Connection closed by ...`、`Disconnected from ...` → Authentication **3002**（activity_id 1 Logon / 2 Logoff，status_id 1/2，user.name，src_endpoint.ip/port，auth_protocol，`type_uid = 300200 + activity_id`，category_uid 3）；`event.type = auth` 的 JSON（嵌套或扁平键）→ 3002，已映射的键从 unmapped 中移除；其余 → Base Event **0**（文本行放 raw_data，JSON 整个对象放 unmapped）。公共字段 time（ms）、severity_id、metadata（version、product.name = LogGate、log_name）。4001 按 §0.5 不在 v1 范围。golden 文件测试 + OCSF 子集 JSON Schema 校验（`santhosh-tekuri/jsonschema/v6`，只在测试里用）。
 - **文本输入**：`POST /v1/events` 带 `Content-Type: text/plain` 时按行切分，每行一个事件。syslog TCP 未做（见缺口）。
 - **脱敏引擎**（`internal/mask`）：字段策略 trie（`keep | drop | hash | mask | scan`，默认 scan，路径支持 `*`，数组透明）；hash = HMAC-SHA256 取前 16 字节 hex，密钥来自环境变量；scan 遍历整棵树（含 raw_data、unmapped），字符串和 json.Number 都扫。预过滤（数字 ≥ 11 个才跑数字扫描，有 `@` 才跑 e-mail RE2）+ 手写零分配数字串扫描器，严格边界（前后不能紧挨 ASCII 字母数字；`%XX` URL 转义视为边界）。
@@ -51,7 +51,39 @@ LogGate 是一个用 Go 编写的单机安全日志采集网关。它的目标�
 - **基准配置**：faultbench 的 `_base.yaml` 把 `unmapped.test_seq / run_id / scheduled_send_ns` 设为 keep；脱敏开启后重跑 quick S0+S1，lost 全部为 0（[结果](bench/results/20261018-m4-windows-quick-S0S1/fault.md)）。
 - **piigen / piieval**：确定性合成标注集（span 级字节偏移）+ 评测，见下文。
 
-已知缺口（详见实现说明 §4、§9、§12）：最终故障数字必须在 Linux 上跑 full profile；S5 尚未运行；没有 Prometheus、ENOSPC 只读模式；sweeper 全量扫描 L1；syslog TCP 输入未做；race detector 未在本机运行。
+### M5（本次）
+- **Prometheus 指标**（`internal/metrics`，`prometheus/client_golang`，独立监听 `admin.metrics`，默认 `:9091`，`GET /metrics`）：
+
+  | 指标 | 类型 | 标签 |
+  |---|---|---|
+  | `loggate_ingest_events_total` | counter | source, result（accepted / wal_error 按事件计；backpressure / unauthorized / bad_request / too_large / draining 按请求计） |
+  | `loggate_wal_bytes` | gauge | — |
+  | `loggate_wal_fsync_seconds` | histogram | — |
+  | `loggate_l2_depth`、`loggate_l1_pending`、`loggate_watermark` | gauge | dest |
+  | `loggate_delivered_total` | counter | dest, origin（live / replay / redeliver） |
+  | `loggate_delivery_errors_total` | counter | dest, kind（retryable / non_retryable / throttled） |
+  | `loggate_dlq_total` | counter | dest, reason |
+  | `loggate_breaker_state` | gauge | dest（0 闭合 / 1 半开 / 2 断开） |
+  | `loggate_plugin_state` | gauge | dest（0 absent / 1 registered / 2 active / 3 draining / 4 unregistered） |
+  | `loggate_e2e_latency_seconds` | histogram | dest（received_at → sink 确认，含 L1 暂存时间） |
+  | `loggate_mask_hits_total` | counter | type |
+  | `loggate_route_level_blocked_total` | counter | dest |
+  | `loggate_backpressure_active` | gauge | — |
+
+  另含 Go runtime / process 指标。事件类指标通过 ingest、WAL、slot、DLQ 的钩子更新；状态类在抓取时从 `Gateway.MetricsSnapshot()` 读取。**标签基数有界**：每个标签一个限流器，超出固定数量（dest 64、source 64、reason 32……）的值归为 `other`。
+- **演示模式** `loggate --demo`：进程内网关 + 模拟 SOAR webhook 接收端 + file / sqlite 目的地 + 合成负载（默认 50 eps，sshd 认证行和带 piibench 合成 PII 的 JSON 事件）+ 实时对账。仅在演示模式注册 `/demo/*`：`POST /demo/fault {dest, mode: down|slow|ok, delay_ms}`、`POST /demo/kill-restart`（**模拟**崩溃：`Gateway.Crash()` 丢弃内存状态、不优雅关闭，再从磁盘重开）、`POST /demo/unregister|register {name}`。只接受回环地址 + 回环 Host + `X-LogGate-Demo: 1` 头。
+- **Web 控制台**（`internal/ui`，`go:embed`，原生 JS，无 CDN，CSP `default-src 'self'`，亮/暗主题，响应式），监听 `admin.ui`（默认 `:8081`，路径 `/ui/`），SSE 每秒推送：计数器、目的地表（生命周期、熔断、L2、L1、30s 窗口 p99、最近错误类型、已投递）、L1 趋势图；演示模式另有操作按钮、对账面板（每个目的地的 lost / dup，lost=0 高亮）、脱敏样例（最近 20 条**脱敏后**事件 + DataClass / 分级标签 + 命中数，从不展示原文）、操作记录。中文标签附英文副标题。非演示模式只显示只读的计数器和目的地表。
+
+已知缺口（详见实现说明 §4、§9、§12、§15）：最终故障数字必须在 Linux 上跑 full profile；S5 尚未运行；没有 ENOSPC 只读模式、gRPC admin / loggatectl、Replace（§0.5 不在 v1 范围）；sweeper 全量扫描 L1；syslog TCP 输入未做；race detector 未在本机运行。
+
+### 演示
+
+```bash
+go build -o bin/loggate ./cmd/loggate
+./bin/loggate --demo        # 控制台 http://127.0.0.1:8081/ui/，指标 http://127.0.0.1:9091/metrics
+```
+
+步骤见 [docs/DEMO.md](docs/DEMO.md)。本机（Windows）走查结果：soar 停止约 25s，L1 涨到 400 条以上，archive / siem 的 p99 保持约 27ms；恢复后几秒内 L1 回到 0，三个目的地 lost=0、dup=0。模拟崩溃后 9ms 重启，重放 38 条：archive（file）原始重复 37，siem 存储重复 0，soar 原始重复 26 / 存储重复 0；lost 全部为 0。崩溃瞬间 1 个请求失败（未 ack）。soar 慢 500ms 时，soar 的 p99 约 1s，archive / siem 仍约 27ms。
 
 ### 基准结果
 
@@ -158,6 +190,8 @@ go test ./internal/mask -run '^$' -fuzz FuzzMaskString -fuzztime 20s
 
 数据目录：`data/wal/`（WAL 段）、`data/state.db`（bbolt：L1、checkpoint、registry）、`data/dlq/`（死信）。
 
+指标和控制台：`admin.metrics`（默认 `:9091`）提供 `GET /metrics`；`admin.ui`（默认 `:8081`）提供只读控制台 `/ui/`；设为 `off` 关闭。示例配置把两者都绑定到 127.0.0.1。
+
 收到 SIGINT 或 SIGTERM 时优雅关闭：停止接收 HTTP、WAL 刷盘、dispatcher 处理完已提交事件、各目的地完成在途批次并把 L2 剩余事件 Park、写最终 checkpoint。重启后不重放、不重复。超时用 `-shutdown-timeout` 设置，默认 30s。
 
 ## 故障注入基准
@@ -193,6 +227,7 @@ go test ./... -count=1
 - **WAL**：往返、CRC、撕裂尾、滚段、毒段、ENOSPC 不 ack、ack 在 fsync 之后、延迟删除、ScanFrom。
 - **tracker / state / delivery / worker 单元测试**：乱序 Resolve、无流量目的地、L1 合并与清位删除、segRef、due 与陈旧索引、提交后回调、ckpt 单调、registry 稳定 ID、HTTP 状态分类、jitter 上下界、熔断、份额策略（FakeClock）。
 - **集成测试**（进程内 fake sink + 真实 file/sqlite）：两个 sink 一个失败时健康 sink 精确一次、失败 sink 恢复后精确一次且 L1 归零；NonRetryable 与预算耗尽进 DLQ；孤儿 TTL；Draining 不丢；GC；429 反压；优雅重启 dup=0。
+- **指标 / 控制台 / 演示（M5）**：观察者计数与直方图、抓取时状态指标（GatherAndCompare）、标签基数上限；网关跑流量后全部指标族都存在且计数正确（含 max_level 拦截、脱敏命中、redeliver）；静态资源已嵌入且不引用外部资源；SSE 输出合法 JSON；非演示模式下 `/demo/*` 返回 404；演示端点的回环 / Host / 防 CSRF 头校验；演示端到端（流量 → soar 宕机 L1 上涨且 archive 继续投递 → 恢复回落 → 模拟崩溃重启 → 三个目的地 lost=0、siem/soar 存储重复 0、面板中的脱敏事件用新引擎复扫无 PII）。
 - **崩溃恢复**：在"WAL 提交后、派发前""Park 提交后""sink 成功后、checkpoint 前"三个点模拟崩溃，以及故障期间连续崩溃两次：每个已 ack 事件到达每个目标至少一次，sqlite 中没有重复行。
 
 - **脱敏 / 归一化**：MOD 11-2 已知向量（含 X、小写 x）、闰日 0229（2000/2004 合法，1900/2023 非法）、省码、Luhn 向量、BIN 白名单边界（2220/2221、2720/2721）、数字边界（紧挨字母或数字不匹配）、`%XX` 边界、分组卡号、区间冲突、字段策略（keep 子树中的 scan、`*`、数组、default drop）、fail-closed（注入 panic）、分级映射（跨字段组合、显式核心）、max_level 路由、0 allocs；sshd / JSON golden 文件 + OCSF 子集 schema 校验；WAL 原始字节中无 PII、400 响应不回显请求内容；端到端（file sink + fake sink）验证 data_dir 和 sink 输出里都没有原文、max_level 拦截计数正确。
@@ -211,7 +246,7 @@ go test ./... -count=1
 ## 目录
 
 ```
-cmd/loggate/           主程序
+cmd/loggate/           主程序（含 --demo）
 cmd/mocksink/          基准：mock webhook 接收方
 cmd/loadgen/           基准：开环负载
 cmd/reconcile/         基准：独立对账
@@ -241,7 +276,10 @@ internal/sink          Sink / Envelope 接口
 internal/sink/file     file sink
 internal/sink/sqlite   sqlite sink（幂等）
 internal/sink/webhook  webhook sink
-internal/gateway       组装各组件（含 admin API、磁盘配额），main 和端到端测试共用
+internal/gateway       组装各组件（含 admin API、磁盘配额、指标快照），main 和端到端测试共用
+internal/metrics       Prometheus 指标（观察者钩子 + 抓取时快照，标签基数上限）
+internal/ui            Web 控制台（go:embed 静态资源、SSE、快照结构）
+internal/demo          演示模式：模拟 SOAR 接收端、合成负载、对账、模拟崩溃、/demo/* 端点
 internal/bench/        基准实现：scenario、loadgen、mocksink、journal、reconcile、stats、faultbench
 ```
 
